@@ -135,6 +135,7 @@ mod kmer;
 mod compact_int_vector;
 
 pub mod dbg;
+pub mod vodbg;
 pub mod benchmark;
 
 mod sdsl_compatibility;
