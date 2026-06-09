@@ -11,11 +11,16 @@ pub mod nearest_neighbor_dictionary;
 pub mod lookup;
 pub mod util;
 
+/// A Balanced Parenthesis structure with support for the operations, rank, select, find open and
+/// enclose.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Bp {
     pub levels: Vec<BpLevel>,
     pub block_size: usize,
 }
 
+/// One level of the recursive Balanced Parenthesis structure.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BpLevel {
     /// The original sequence of balanced parenthesis.
     pub parenthesis: BitVector,

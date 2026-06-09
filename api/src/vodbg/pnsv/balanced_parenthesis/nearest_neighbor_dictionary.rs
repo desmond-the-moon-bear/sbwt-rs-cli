@@ -21,6 +21,7 @@ use simple_sds_sbwt::{
 // note(mk): Should the structure be generic over the SAMPLE_OFFSET? If it is, the compiler will be
 // able to optimise the division and modulo operations. If it isn't, it will be more difficult to
 // dynamically create the structure.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NearestNeighbourDictionary<const SAMPLE_OFFSET: usize = 8> {
     /// Given the index of the bits set to 1 in the bitvector - i, store the position of those bits
     /// in the bitvector whose index i is equal to 0 modulo SAMPLE_OFFSET (for 1 based indexing).

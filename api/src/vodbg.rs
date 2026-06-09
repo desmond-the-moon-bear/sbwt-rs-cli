@@ -2,4 +2,5 @@
 
 /// Module for Previous and Next Smaller Value support.
 pub mod pnsv;
+pub mod benchmark;
 
