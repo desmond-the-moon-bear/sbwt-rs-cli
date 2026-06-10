@@ -100,13 +100,13 @@ impl PnsvBp {
     }
 }
 
-pub struct LcsPnsvBp {
-    pub lcs: LcsArray,
+pub struct LcsPnsvBp<'a> {
+    pub lcs: &'a LcsArray,
     pub pnsv: PnsvBp,
 }
 
-impl LcsPnsvBp {
-    pub fn new(lcs: LcsArray, block_size: usize) -> Self {
+impl<'a> LcsPnsvBp<'a> {
+    pub fn new(lcs: &'a LcsArray, block_size: usize) -> Self {
         let iterator = (0..lcs.len()).map(|index| lcs.access(index));
         let pnsv = PnsvBp::from_iterator(iterator, lcs.len(), block_size);
         Self {
@@ -116,16 +116,27 @@ impl LcsPnsvBp {
     }
 }
 
-impl ContractLeft for LcsPnsvBp {
+impl<'a> ContractLeft for LcsPnsvBp<'a> {
     #[allow(non_snake_case)]
     fn contract_left(&self, I: std::ops::Range<usize>, target_len: usize) -> std::ops::Range<usize> {
         let mut new_start = I.start;
-        while self.lcs.access(new_start) >= target_len {
-            new_start = self.pnsv.previous(new_start);
+        let mut jump;
+        while 0 < new_start && self.lcs.access(new_start) >= target_len {
+            jump = self.pnsv.previous(new_start);
+            if new_start == jump {
+                new_start = 0;
+                break;
+            }
+            new_start = jump;
         }
         let mut new_end = I.end;
-        while self.lcs.access(new_end) >= target_len {
-            new_end = self.pnsv.next(new_start);
+        while new_end < self.lcs.len() && self.lcs.access(new_end) >= target_len {
+            jump = self.pnsv.next(new_end);
+            if new_end == jump {
+                new_end = self.lcs.len();
+                break;
+            }
+            new_end = jump;
         }
         new_start..new_end
     }

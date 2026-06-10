@@ -1,11 +1,11 @@
 #![allow(unused)]
 
+use crate::streaming_index::{ContractLeft, ExtendRight, StreamingIndex};
 use crate::SbwtIndexVariant;
-use crate::streaming_index::StreamingIndex;
-use crate::{sbwt::SbwtIndex, streaming_index::LcsArray, subsetseq::SubsetSeq};
+use crate::streaming_index::LcsArray;
 
 // note(mk): Temporary solution for reading input data.
-pub fn read_index_and_lcs() -> (SbwtIndexVariant, LcsArray){
+fn read_index_and_lcs() -> (SbwtIndexVariant, LcsArray) {
     let mut args = std::env::args().skip(4);
     let sbwt_path = args.next().expect("expected sbwt index path");
     let lcs_path = args.next().expect("expected lcs index path");
@@ -19,50 +19,94 @@ pub fn read_index_and_lcs() -> (SbwtIndexVariant, LcsArray){
     (index, lcs)
 }
 
-pub fn read_query() {
+fn read_query() -> Vec<Vec<u8>> {
+    use crate::SeqStream;
+
     let mut args = std::env::args().skip(6);
-    let query_path = args.next().expect("query path");
+    let query_path = args.next().expect("expected query path");
     let query_file = std::fs::File::open(query_path).unwrap();
-    let input = std::io::BufReader::new(query_file);
-    let input = crate::JSeqIOSeqStreamWrapper{ inner: jseqio::reader::DynamicFastXReader::new(input).unwrap() };
-    // input.stream_next()
-    todo!()
+    let buf_reader = std::io::BufReader::new(query_file);
+    let mut stream = crate::JSeqIOSeqStreamWrapper {
+        inner: jseqio::reader::DynamicFastXReader::new(buf_reader).unwrap(),
+    };
+    let mut result: Vec<Vec<u8>> = vec![];
+    while let Some(sequence) = stream.stream_next() {
+        result.push(sequence.into());
+    }
+    result
 }
 
-fn benchmark_bound_matching_statistics_lcs_only() {
-//     log::info!("Querying {} random sequences of length {}", n_queries, query_len);
-//     let start_time = std::time::Instant::now();
-//     let mut checksum = 0_usize;
-//     let mut n_kmers_queried = 0_usize;
-//     for query in queries.iter(){
-//         for x in index.matching_statistics(query).iter(){
-//             checksum += x.0;
-//         }
-//         n_kmers_queried += std::cmp::max(query.len() as isize - sbwt.k() as isize + 1, 0) as usize;
-//     }
-//     let end_time = std::time::Instant::now();
-//     log::info!("Sum of answers: {}", checksum);
-//     println!("Elapsed time: {:.2} seconds", (end_time - start_time).as_secs_f64());
-//     let nanos_per_kmer = (end_time - start_time).as_nanos() as f64 / n_kmers_queried as f64;
-//     println!("{:.2} nanoseconds / k-mer", nanos_per_kmer);
-//
-//     nanos_per_kmer.round() as usize
-    todo!()
+fn benchmark_bms_separate_queries<E, C>(
+    index: &StreamingIndex<'_, E, C>,
+    queries: &[Vec<u8>],
+    bound: usize,
+) where
+    E: ExtendRight,
+    C: ContractLeft,
+{
+    let start_time = std::time::Instant::now();
+    let mut checksum = 0_usize;
+    let mut n_kmers_queried = 0_usize;
+    for query in queries {
+        for x in index.bounded_matching_statistics(query, bound).iter() {
+            checksum += x.0;
+        }
+        n_kmers_queried += std::cmp::max(query.len() as isize - index.k as isize + 1, 0) as usize;
+    }
+    let end_time = std::time::Instant::now();
+    print!("{:.2},", (end_time - start_time).as_secs_f64());
+    let nanos_per_kmer = (end_time - start_time).as_nanos() as f64 / n_kmers_queried as f64;
+    print!("{:.2},{}", nanos_per_kmer, checksum);
+    // nanos_per_kmer.round() as usize
 }
 
+fn benchmark_bms_joined_queries_lcs(bound: usize) {}
 
 #[cfg(test)]
 mod test {
-    use super::*;
+    #![allow(unused)]
 
-    /// note(mk): Temporary solution for running the benchmark. Command to run these benchmarks:
-    /// cargo t vodbg::benchmark -- --ignored --nocapture sbwt_path lcs_path query_path
-    ///
+    use super::*;
+    use crate::vodbg::pnsv::LcsPnsvBp;
+
+    // note(mk): Temporary solution for running the benchmark. Command to run these benchmarks:
+    // cargo t (--release) vodbg::benchmark -- --ignored --nocapture sbwt_path lcs_path query_path
     #[ignore]
     #[test]
     fn run_benchmark() {
-        // read_index_and_lcs();
-        todo!()
+        let (index, lcs) = read_index_and_lcs();
+        let SbwtIndexVariant::SubsetMatrix(sbwt) = index;
+        let queries = read_query();
+
+        let lcs_pnsv = LcsPnsvBp::new(&lcs, 2048);
+
+        let lcs_index = StreamingIndex {
+            extend_right: &sbwt,
+            contract_left: &lcs,
+            n: sbwt.n_sets(),
+            k: sbwt.k(),
+        };
+
+        let lcs_pnsv_index = StreamingIndex {
+            extend_right: &sbwt,
+            contract_left: &lcs_pnsv,
+            n: sbwt.n_sets(),
+            k: sbwt.k(),
+        };
+
+        let lower = 8;
+        let upper = 31;
+
+        for bound in lower..upper {
+            print!("scan,{},", bound);
+            benchmark_bms_separate_queries(&lcs_index, &queries, bound);
+            println!();
+        }
+
+        for bound in 1..upper {
+            print!("bp,{},", bound);
+            benchmark_bms_separate_queries(&lcs_pnsv_index, &queries, bound);
+            println!();
+        }
     }
 }
-
