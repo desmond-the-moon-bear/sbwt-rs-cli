@@ -1,3 +1,5 @@
+// Code by Martin Kostadinov.
+
 use balanced_parenthesis as bp;
 
 use crate::{ContractLeft, LcsArray};
@@ -9,6 +11,11 @@ use simple_sds_sbwt::{
 };
 
 pub mod balanced_parenthesis;
+pub mod ranges;
+pub mod scan;
+
+pub use ranges::Ranges;
+pub use scan::LcsSimd;
 
 /// Previous and Next Smaller Value using Balanced Parenthesis.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -142,6 +149,22 @@ impl<'a> ContractLeft for LcsPnsvBp<'a> {
     }
 }
 
+pub struct PnsvHybrid {
+    pub ranges: Ranges,
+    pub lcs_simd: LcsSimd,
+}
+
+impl ContractLeft for PnsvHybrid {
+    fn contract_left(&self, I: std::ops::Range<usize>, target_len: usize) -> std::ops::Range<usize> {
+        if target_len > self.ranges.levels.len() {
+            return self.lcs_simd.contract_left(I, target_len);
+        }
+        let new_start = self.ranges.find_previous_range(I.start, target_len);
+        let new_end = self.ranges.find_next_range(I.end, target_len);
+        new_start..new_end
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::balanced_parenthesis as bp;
@@ -219,6 +242,4 @@ mod tests {
             }
         }
     }
-
-    // TODO(mk): write tests whether LcsPnsvBp works correctly.
 }
