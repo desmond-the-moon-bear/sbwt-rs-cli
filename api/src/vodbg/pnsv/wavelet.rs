@@ -210,57 +210,96 @@ impl WindowedWaveletTree {
 
             let max_value = self.tree[current_node].lower_bound + self.tree[current_node].window_size - 1;
             if max_value < target_length {
+                println!("max_value {}", max_value);
+                println!("current_node {}", current_node);
+                println!("here 1");
                 result = result.max(self.absolute_index(current_node, index));
                 break;
             }
 
-            let left_child_window_size = (self.tree[current_node].window_size & 1)
-                + (self.tree[current_node].window_size >> 1);
-            let min_value_in_right_child =
-                self.tree[current_node].lower_bound + left_child_window_size;
-            let max_value_in_left_child = min_value_in_right_child - 1;
+            let left_child_window_size = (self.tree[current_node].window_size & 1) + (self.tree[current_node].window_size >> 1);
+            let min_value_in_right_child = self.tree[current_node].lower_bound + left_child_window_size;
 
             let data_index = self.tree[current_node].data;
             let is_one = self.data[data_index].get(index);
-            if !is_one && max_value_in_left_child < target_length {
-                result = result.max(self.absolute_index(current_node, index));
+            let one_rank = self.data[data_index].rank(index);
+            let zero_rank = index - one_rank;
+
+            if min_value_in_right_child - 1 < target_length {
+                // The maximum possible value in the left child is smaller than the target length.
+                // Store the absolute position of the rightmost 0 up to the current index
+                // (inclusive) if it is better than the previous solutions.
+                if !is_one {
+                    println!("here 2 {}", result);
+                    result = result.max(self.absolute_index(current_node, index));
+                    println!("here 2 {}", result);
+                }
+                if zero_rank > 0 {
+                    // The number of zeroes before can be at most the number of zeroes in the given
+                    // bitvector. Searching for the last one should always succeed.
+                    let rightmost_zero_index_before = self.data[data_index]
+                        .select_zero(zero_rank - 1)
+                        .unwrap();
+                    println!("here 3 {}", result);
+                    result = result.max(self.absolute_index(current_node, rightmost_zero_index_before));
+                    println!("here 3 {}", result);
+                }
             }
 
             if min_value_in_right_child >= target_length {
-                // Move to the left child as there are no possible smaller values in the right
-                // child.
-                current_node = self.tree[current_node].left_child;
-                if current_node == Node::NULL {
+                if min_value_in_right_child - 1 < target_length {
+                    // The candidates in the left child have already been checked.
                     break;
                 }
-                // Update the index so that it is valid in the left child.
-                index = self.data[data_index].rank_zero(index);
-                if is_one {
-                    if index == 0 {
-                        // There are no more zeroes to the left. Therefore, there are no more smaller
-                        // values that can be found.
-                        break;
-                    }
-                    index -= 1;
-                }
+                // Move to the left child as there are no possible smaller values in the right
+                // child. Update the index so that it is valid in the left child.
+                index = if !is_one {
+                    // If this bit is a 0, move to its index in the left child.
+                    zero_rank
+                } else if zero_rank > 0 {
+                    // If this bit is not a 0, but there are 0 bits before it, move to the
+                    // corresponding index of the rightmost 0 in the left child.
+                    zero_rank - 1
+                } else {
+                    // Otherwise, there are no more 0 bits before the current index, therefore, the
+                    // left child will not contain any candidates for the result and we can
+                    // exit.
+                    break;
+                };
+                // If the maximum value in the left child is greater than or equal to the target
+                // length and the minimum value in the left child which is equal to the minimum
+                // value in this node is smaller than the target length, then there are more than 2
+                // values in the range of the left child i.e. it is guaranteed to exist.
+                current_node = self.tree[current_node].left_child;
                 continue;
             }
 
-            // Try to move to the right child if there are any elements which are a part of it.
-            // current_node = self.tree[current_node].right_child;
-            // if current_node == Node::NULL {
-            //     break;
-            // }
-            // // Update the index so that it is valid in the right child.
-            // index = self.data[data_index].rank(index); - if !is_one { 1 } else { 0 };
-            todo!()
+            // min_value_in_right_child < target_length
+
+            // The candidate indices for the previous smaller value which are in the left child
+            // have been handled. Therefore, we should try moving to the right child as there might
+            // still be candidates there.
+
+            index = if is_one {
+                one_rank
+            } else if one_rank > 0 {
+                one_rank - 1
+            } else {
+                break;
+            };
+
+            // If the minimum value in the right child is smaller than the target length and the
+            // maximum value in the right child which is equal to the maximum value in the range of
+            // this node is greater than or equal to the target length, then there must be at least
+            // 2 different values in the range of the right child i.e. it is guaranteed to exist.
+            current_node = self.tree[current_node].right_child;
         }
 
         result
     }
 
-    pub fn next(&self, mut index: usize, target_value: usize) -> usize {
-        if target_value <= self.lower_bound {
+    pub fn next(&self, mut index: usize, target_length: usize) -> usize {
+        if target_length <= self.lower_bound {
             return self.len();
         }
 
@@ -268,76 +307,75 @@ impl WindowedWaveletTree {
         let mut current_node = 0;
 
         loop {
+            if self.tree[current_node].lower_bound >= target_length {
+                break;
+            }
 
-            todo!();
+            let max_value = self.tree[current_node].lower_bound + self.tree[current_node].window_size - 1;
+            if max_value < target_length {
+                result = result.min(self.absolute_index(current_node, index));
+                break;
+            }
 
-            // let data_index = self.tree[current_node].data;
-            // let left_child_window_size = (self.tree[current_node].window_size & 1)
-            //     + (self.tree[current_node].window_size >> 1);
-            // let max_value_in_left_child =
-            //     self.tree[current_node].lower_bound + left_child_window_size - 1;
-            //
-            // if !self.data[data_index].get(index) { 
-            //     if max_value_in_left_child < target_value {
-            //         result = result.min(self.absolute_index(current_node, index));
-            //     }
-            //
-            //     // max_value_in_left_child >= target_value
-            //     // There are no elements smaller than the target_value in the right child. Proceed
-            //     // to the left child.
-            //     current_node = self.tree[current_node].left_child;
-            //     if current_node == Node::NULL {
-            //         break;
-            //     }
-            //     index = self.data[data_index].rank_zero(index);
-            //     continue;
-            // }
-            //
-            // // At the current index the bit is set to 1.
-            // let number_of_smaller_elements_before = self.data[data_index].rank_zero(index);
-            // if max_value_in_left_child < target_value {
-            //     if number_of_smaller_elements_before < self.data[data_index].count_zeros() {
-            //         // There is at least one smaller element afterwards.
-            //         let position_of_leftmost_smaller_element = self.data[data_index]
-            //             .select_zero(number_of_smaller_elements_before)
-            //             .unwrap();
-            //         result = result.min(self.absolute_index(current_node, position_of_leftmost_smaller_element));
-            //     }
-            //
-            //     // Move to the right child to search for further candidates.
-            //     if max_value_in_left_child + 1 < target_value {
-            //         // If there could exists a value smaller than the target value in the range of
-            //         // the right child, we have to check.
-            //         current_node = self.tree[current_node].right_child;
-            //         if current_node == Node::NULL {
-            //             break;
-            //         }
-            //         index = self.data[data_index].rank(index);
-            //     } else {
-            //         // max_value_in_left_child + 1 == min_value_in_right_child >= target_value
-            //         //
-            //         // Otherwise, all values in the right child are greater than or equal to the
-            //         // target value so there is no need to explore the tree further.
-            //         break;
-            //     }
-            // } else {
-            //     // max_value_in_left_child == min_value_in_right_child - 1 >= target_value
-            //     // There are no possible values that are smaller than the target value in the right
-            //     // child, so the only possibility is the left child.
-            //
-            //     if number_of_smaller_elements_before == self.data[data_index].count_zeros() {
-            //         // There aren't any possible smaller elements from the left child to the right
-            //         // of this index, therefore, we can stop the search.
-            //         break;
-            //     }
-            //
-            //     // Move to the left child.
-            //     current_node = self.tree[current_node].right_child;
-            //     if current_node == 0 {
-            //         break;
-            //     }
-            //     index = number_of_smaller_elements_before - 1;
-            // }
+            let left_child_window_size = (self.tree[current_node].window_size & 1) + (self.tree[current_node].window_size >> 1);
+            let min_value_in_right_child = self.tree[current_node].lower_bound + left_child_window_size;
+
+            let data_index = self.tree[current_node].data;
+            let is_one = self.data[data_index].get(index);
+            let one_rank = self.data[data_index].rank(index);
+            let zero_rank = index - one_rank;
+
+            if min_value_in_right_child - 1 < target_length {
+                // The maximum possible value in the left child is smaller than the target length.
+                // Store the absolute position of the leftmost 0 after the current index
+                // (inclusive) if it is better than the previous solutions.
+                if !is_one {
+                    result = result.min(self.absolute_index(current_node, index));
+                }
+                if zero_rank < self.data[data_index].count_zeros() {
+                    // There is at least one zero afterwards.
+                    let leftmost_zero_index_after = self.data[data_index]
+                        .select_zero(zero_rank)
+                        .unwrap();
+                    result = result.min(self.absolute_index(current_node, leftmost_zero_index_after));
+                }
+            }
+
+            if min_value_in_right_child >= target_length {
+                if min_value_in_right_child - 1 < target_length {
+                    // The candidates in the left child have already been checked.
+                    break;
+                }
+                // Move to the left child as there are no possible smaller values in the right
+                // child. Update the index so that it is valid in the left child.
+                if is_one && zero_rank == self.data[data_index].count_zeros() {
+                    // All 0s are before the current index.
+                    break;
+                }
+                index = zero_rank;
+                // If the maximum value in the left child is greater than or equal to the target
+                // length and the minimum value in the left child which is equal to the minimum
+                // value in this node is smaller than the target length, then there are more than 2
+                // values in the range of the left child i.e. it is guaranteed to exist.
+                current_node = self.tree[current_node].left_child;
+                continue;
+            }
+
+            // min_value_in_right_child < target_length
+
+            // The candidate indices for the previous smaller value which are in the left child
+            // have been handled. Therefore, we should try moving to the right child as there might
+            // still be candidates there.
+
+            if !is_one && one_rank == self.data[data_index].count_ones() {
+                break;
+            }
+            index = one_rank;
+            // If the minimum value in the right child is smaller than the target length and the
+            // maximum value in the right child which is equal to the maximum value in the range of
+            // this node is greater than or equal to the target length, then there must be at least
+            // 2 different values in the range of the right child i.e. it is guaranteed to exist.
+            current_node = self.tree[current_node].right_child;
         }
 
         result
@@ -358,24 +396,20 @@ impl WindowedWaveletTree {
 mod tests {
     use super::*;
 
-    fn previous(items: &[usize], index: usize, target_length: usize, lower_bound: usize) -> usize {
+    fn previous(items: &[usize], index: usize, target_length: usize, lower_bound: usize, upper_bound: usize) -> usize {
         for i in (0..=index).rev() {
-            if target_length <= lower_bound && items[i] < lower_bound {
-                continue;
-            }
-            if items[i] < target_length {
+            let item = items[i].clamp(lower_bound, upper_bound);
+            if item < target_length {
                 return i;
             }
         }
         0
     }
 
-    fn next(items: &[usize], index: usize, target_length: usize, lower_bound: usize) -> usize {
+    fn next(items: &[usize], index: usize, target_length: usize, lower_bound: usize, upper_bound: usize) -> usize {
         for i in index..items.len() {
-            if target_length <= lower_bound && items[i] < lower_bound {
-                continue;
-            }
-            if items[i] < target_length {
+            let item = items[i].clamp(lower_bound, upper_bound);
+            if item < target_length {
                 return i;
             }
         }
@@ -389,18 +423,20 @@ mod tests {
             9, 9, 9, 9, 8, 8, 8, 8, 7, 7, 7, 7, 6, 6, 6, 6, 5, 5, 5, 5, 4, 4, 4, 4,
         ];
         let lower_bound = 5;
-        let wavelet = WindowedWaveletTree::from_iterator(items.iter().cloned(), lower_bound, 3);
+        let width = 3;
+        let upper_bound = lower_bound + width - 1;
+        let wavelet = WindowedWaveletTree::from_iterator(items.iter().cloned(), lower_bound, width);
         for i in 0..items.len() {
             for target_length in 4..=9 {
                 assert_eq!(
-                    previous(items, i, target_length, lower_bound),
+                    previous(items, i, target_length, lower_bound, upper_bound),
                     wavelet.previous(i, target_length),
                     "ws: 3, previous; i: {}, target_length: {}",
                     i,
                     target_length
                 );
                 assert_eq!(
-                    next(items, i, target_length, lower_bound),
+                    next(items, i, target_length, lower_bound, upper_bound),
                     wavelet.next(i, target_length),
                     "ws: 3, next; i: {}, target_length: {}",
                     i,
@@ -408,18 +444,20 @@ mod tests {
                 );
             }
         }
-        let wavelet = WindowedWaveletTree::from_iterator(items.iter().cloned(), 5, 4);
+        let width = 4;
+        let upper_bound = lower_bound + width - 1;
+        let wavelet = WindowedWaveletTree::from_iterator(items.iter().cloned(), lower_bound, width);
         for i in 0..items.len() {
             for target_length in 4..=9 {
                 assert_eq!(
-                    previous(items, i, target_length, lower_bound),
+                    previous(items, i, target_length, lower_bound, upper_bound),
                     wavelet.previous(i, target_length),
                     "ws: 4, previous; i: {}, target_length: {}",
                     i,
                     target_length
                 );
                 assert_eq!(
-                    next(items, i, target_length, lower_bound),
+                    next(items, i, target_length, lower_bound, upper_bound),
                     wavelet.next(i, target_length),
                     "ws: 4, next; i: {}, target_length: {}",
                     i,
