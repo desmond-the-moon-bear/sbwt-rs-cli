@@ -63,7 +63,7 @@ impl Ranges {
     /// Given an index and a target value finds the index of the previous element in the LCS array
     /// which has value smaller than the target one. This is equivalent to finding a the maximum
     /// border index which is smaller than target_len in the corresponding level.
-    pub fn find_previous_range(&self, index: usize, target_len: usize) -> usize {
+    pub fn previous(&self, index: usize, target_len: usize) -> usize {
         let mut answer = 0;
         // To be consistent with the ContractLeft semantics this method accepts a target value for
         // which to expand the interval. However, we want to expand the range to a level (i.e.
@@ -95,7 +95,7 @@ impl Ranges {
 
     /// Similar to the find_previous_range method. Expands the upper bound of the range for the
     /// ContractLeft operation.
-    pub fn find_next_range(&self, index: usize, target_len: usize) -> usize {
+    pub fn next(&self, index: usize, target_len: usize) -> usize {
         let level_to_search = target_len - 1;
 
         if self.levels[level_to_search].len() >= Self::SCAN_UPPER_BOUND {

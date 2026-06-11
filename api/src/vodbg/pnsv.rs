@@ -13,6 +13,7 @@ use simple_sds_sbwt::{
 pub mod balanced_parenthesis;
 pub mod ranges;
 pub mod scan;
+pub mod wavelet;
 
 pub use ranges::Ranges;
 pub use scan::LcsSimd;
@@ -159,8 +160,8 @@ impl ContractLeft for PnsvHybrid {
         if target_len > self.ranges.levels.len() {
             return self.lcs_simd.contract_left(I, target_len);
         }
-        let new_start = self.ranges.find_previous_range(I.start, target_len);
-        let new_end = self.ranges.find_next_range(I.end, target_len);
+        let new_start = self.ranges.previous(I.start, target_len);
+        let new_end = self.ranges.next(I.end, target_len);
         new_start..new_end
     }
 }

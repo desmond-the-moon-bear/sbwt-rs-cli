@@ -4,6 +4,7 @@ use crate::ContractLeft;
 
 pub type Word = wide::u8x32;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LcsSimd {
     pub words: Vec<Word>,
     pub n: usize,
