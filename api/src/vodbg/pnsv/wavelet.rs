@@ -79,8 +79,6 @@ impl WindowedWaveletTree {
             });
         }
 
-        // println!("{:#?}", tree);
-
         // First pass over the items in order to get the number of bits per bitvector. When
         // allocating the bitvectors this count will be used to allocate enough space so that extra
         // allocations from the expansion of the bitvector when the bits are pushed one by one are
@@ -210,9 +208,6 @@ impl WindowedWaveletTree {
 
             let max_value = self.tree[current_node].lower_bound + self.tree[current_node].window_size - 1;
             if max_value < target_length {
-                println!("max_value {}", max_value);
-                println!("current_node {}", current_node);
-                println!("here 1");
                 result = result.max(self.absolute_index(current_node, index));
                 break;
             }
@@ -230,9 +225,7 @@ impl WindowedWaveletTree {
                 // Store the absolute position of the rightmost 0 up to the current index
                 // (inclusive) if it is better than the previous solutions.
                 if !is_one {
-                    println!("here 2 {}", result);
                     result = result.max(self.absolute_index(current_node, index));
-                    println!("here 2 {}", result);
                 }
                 if zero_rank > 0 {
                     // The number of zeroes before can be at most the number of zeroes in the given
@@ -240,9 +233,7 @@ impl WindowedWaveletTree {
                     let rightmost_zero_index_before = self.data[data_index]
                         .select_zero(zero_rank - 1)
                         .unwrap();
-                    println!("here 3 {}", result);
                     result = result.max(self.absolute_index(current_node, rightmost_zero_index_before));
-                    println!("here 3 {}", result);
                 }
             }
 
@@ -392,6 +383,23 @@ impl WindowedWaveletTree {
     }
 }
 
+impl super::Pnsv for WindowedWaveletTree {
+    #[inline]
+    fn previous(&self, index: usize, target_length: usize) -> usize {
+        self.previous(index, target_length)
+    }
+
+    #[inline]
+    fn next(&self, index: usize, target_length: usize) -> usize {
+        self.next(index, target_length)
+    }
+
+    #[inline]
+    fn max_target(&self) -> usize {
+        self.lower_bound + self.window_size - 1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,54 +424,48 @@ mod tests {
         items.len()
     }
 
+    fn test_with_parameters(items: &[usize], lower_bound: usize, window_size: usize) {
+        let upper_bound = lower_bound + window_size - 1;
+        let wavelet = WindowedWaveletTree::from_iterator(items.iter().cloned(), lower_bound, window_size);
+        for i in 0..items.len() {
+            for target_length in lower_bound + 1..=lower_bound + window_size {
+                assert_eq!(
+                    previous(items, i, target_length, lower_bound, upper_bound),
+                    wavelet.previous(i, target_length),
+                    "ws: {window_size}, previous; i: {}, target_length: {}",
+                    i,
+                    target_length
+                );
+                assert_eq!(
+                    next(items, i, target_length, lower_bound, upper_bound),
+                    wavelet.next(i, target_length),
+                    "ws: {window_size}, next; i: {}, target_length: {}",
+                    i,
+                    target_length
+                );
+            }
+        }
+    }
+
     #[test]
-    fn windowed_wavelet_tree_all() {
+    fn windowed_wavelet_tree_all_01() {
         let items: &[usize] = &[
-            4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7, 8, 8, 8, 8, 9, 9, 9, 9,
-            9, 9, 9, 9, 8, 8, 8, 8, 7, 7, 7, 7, 6, 6, 6, 6, 5, 5, 5, 5, 4, 4, 4, 4,
+            2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7, 8, 8, 8, 8, 9, 9, 9, 9,
+            9, 9, 9, 9, 8, 8, 8, 8, 7, 7, 7, 7, 6, 6, 6, 6, 5, 5, 5, 5, 4, 4, 4, 4, 3, 3, 3, 3, 2, 2, 2, 2,
         ];
-        let lower_bound = 5;
-        let width = 3;
-        let upper_bound = lower_bound + width - 1;
-        let wavelet = WindowedWaveletTree::from_iterator(items.iter().cloned(), lower_bound, width);
-        for i in 0..items.len() {
-            for target_length in 4..=9 {
-                assert_eq!(
-                    previous(items, i, target_length, lower_bound, upper_bound),
-                    wavelet.previous(i, target_length),
-                    "ws: 3, previous; i: {}, target_length: {}",
-                    i,
-                    target_length
-                );
-                assert_eq!(
-                    next(items, i, target_length, lower_bound, upper_bound),
-                    wavelet.next(i, target_length),
-                    "ws: 3, next; i: {}, target_length: {}",
-                    i,
-                    target_length
-                );
-            }
-        }
-        let width = 4;
-        let upper_bound = lower_bound + width - 1;
-        let wavelet = WindowedWaveletTree::from_iterator(items.iter().cloned(), lower_bound, width);
-        for i in 0..items.len() {
-            for target_length in 4..=9 {
-                assert_eq!(
-                    previous(items, i, target_length, lower_bound, upper_bound),
-                    wavelet.previous(i, target_length),
-                    "ws: 4, previous; i: {}, target_length: {}",
-                    i,
-                    target_length
-                );
-                assert_eq!(
-                    next(items, i, target_length, lower_bound, upper_bound),
-                    wavelet.next(i, target_length),
-                    "ws: 4, next; i: {}, target_length: {}",
-                    i,
-                    target_length
-                );
-            }
-        }
+        test_with_parameters(items, 4, 3);
+        test_with_parameters(items, 5, 4);
+        test_with_parameters(items, 2, 6);
+    }
+
+    #[test]
+    fn windowed_wavelet_tree_all_02() {
+        let items: &[usize] = &[
+            2, 2, 2, 3, 3, 4, 3, 3, 1, 4, 6, 4, 5, 8, 8, 5, 6, 6, 7, 6, 7, 3, 2, 7, 8, 6, 6, 6, 9, 9, 9, 9,
+            9, 2, 9, 9, 3, 8, 8, 8, 4, 4, 7, 7, 6, 5, 6, 6, 8, 8, 2, 5, 4, 4, 8, 8, 9, 3, 3, 3, 3, 2, 2, 2,
+        ];
+        test_with_parameters(items, 4, 3);
+        test_with_parameters(items, 5, 4);
+        test_with_parameters(items, 2, 6);
     }
 }

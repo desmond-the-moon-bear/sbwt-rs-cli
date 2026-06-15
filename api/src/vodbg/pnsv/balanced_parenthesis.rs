@@ -255,12 +255,9 @@ fn calculate_pioneers_bitmask(
     pioneers.resize(balanced_parenthesis.len(), false);
 
     // note(mk): There must be a faster way to do this...
-    // println!("============================================================================================");
     for i in 0..balanced_parenthesis.len() {
         pioneers.set_bit(i, false);
-        // print!("{}", if balanced_parenthesis.get(i) { 1 } else { 0 });
     }
-    // println!();
 
     // The maximum size of the parenthesis stack is k (the length of the k-mers).
     parenthesis_stack.clear();

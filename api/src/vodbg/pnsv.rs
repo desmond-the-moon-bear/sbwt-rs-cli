@@ -1,5 +1,11 @@
 // Code by Martin Kostadinov.
 
+pub mod balanced_parenthesis;
+pub mod ranges;
+pub mod scan;
+pub mod wavelet;
+pub mod matrix;
+
 use balanced_parenthesis as bp;
 
 use crate::{ContractLeft, LcsArray};
@@ -10,13 +16,25 @@ use simple_sds_sbwt::{
     }
 };
 
-pub mod balanced_parenthesis;
-pub mod ranges;
-pub mod scan;
-pub mod wavelet;
-
 pub use ranges::Ranges;
 pub use scan::LcsSimd;
+pub use wavelet::WindowedWaveletTree as WWT;
+pub use matrix::Matrix as PnsvMatrix;
+
+/// Previous/Next Smaller value.
+pub trait Pnsv {
+    fn previous(&self, index: usize, target_length: usize) -> usize;
+    fn next(&self, index: usize, target_length: usize) -> usize;
+    fn max_target(&self) -> usize { 0 }
+}
+
+impl<T: ?Sized + Pnsv> ContractLeft for T {
+    fn contract_left(&self, I: std::ops::Range<usize>, target_len: usize) -> std::ops::Range<usize> {
+        let new_start = self.previous(I.start, target_len);
+        let new_end = self.next(I.end, target_len);
+        new_start..new_end
+    }
+}
 
 /// Previous and Next Smaller Value using Balanced Parenthesis.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -152,17 +170,36 @@ impl<'a> ContractLeft for LcsPnsvBp<'a> {
 
 pub struct PnsvHybrid {
     pub ranges: Ranges,
+    pub wavelet: WWT,
     pub lcs_simd: LcsSimd,
 }
 
 impl ContractLeft for PnsvHybrid {
+    #[allow(non_snake_case)]
     fn contract_left(&self, I: std::ops::Range<usize>, target_len: usize) -> std::ops::Range<usize> {
-        if target_len > self.ranges.levels.len() {
-            return self.lcs_simd.contract_left(I, target_len);
+        if target_len <= self.ranges.max_target() {
+            return self.ranges.contract_left(I, target_len);
         }
-        let new_start = self.ranges.previous(I.start, target_len);
-        let new_end = self.ranges.next(I.end, target_len);
-        new_start..new_end
+        if target_len <= self.wavelet.max_target() {
+            return self.wavelet.contract_left(I.clone(), target_len);
+        }
+        self.lcs_simd.contract_left(I, target_len)
+    }
+}
+
+pub struct PnsvDyn<'a, const LEVELS: usize> {
+    pub structures: [&'a dyn Pnsv; LEVELS],
+}
+
+impl<'a, const LEVELS: usize> ContractLeft for PnsvDyn<'a, LEVELS> {
+    #[allow(non_snake_case)]
+    fn contract_left(&self, I: std::ops::Range<usize>, target_len: usize) -> std::ops::Range<usize> {
+        for i in 0..self.structures.len() - 1 {
+            if target_len <= self.structures[i].max_target() {
+                return self.structures[i].contract_left(I, target_len);
+            }
+        }
+        self.structures[self.structures.len() - 1].contract_left(I, target_len)
     }
 }
 

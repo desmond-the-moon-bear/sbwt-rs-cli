@@ -4,6 +4,8 @@ use crate::streaming_index::{ContractLeft, ExtendRight, StreamingIndex};
 use crate::SbwtIndexVariant;
 use crate::streaming_index::LcsArray;
 
+use super::pnsv::Pnsv;
+
 // note(mk): Temporary solution for reading input data.
 fn read_index_and_lcs() -> (SbwtIndexVariant, LcsArray) {
     let mut args = std::env::args().skip(4);
@@ -64,14 +66,15 @@ fn benchmark_bms_joined_queries_lcs(bound: usize) {}
 
 #[cfg(test)]
 mod test {
-    #![allow(unused)]
-
     use super::*;
     use crate::vodbg::pnsv::{
         LcsPnsvBp,
         LcsSimd,
+        PnsvDyn,
         PnsvHybrid,
+        PnsvMatrix,
         Ranges,
+        WWT,
     };
 
     // note(mk): Temporary solution for running the benchmark. Command to run these benchmarks:
@@ -79,18 +82,35 @@ mod test {
     #[ignore]
     #[test]
     fn comparison() {
+        println!("loading data...");
         let (index, lcs) = read_index_and_lcs();
         let SbwtIndexVariant::SubsetMatrix(sbwt) = index;
+        println!("lcs.len: {}", lcs.len());
+        println!("index.n_sets: {}", sbwt.n_sets());
         let queries = read_query();
 
+        // println!("creating standard bp structure...");
         // let lcs_pnsv = LcsPnsvBp::new(&lcs, 2048);
 
+        println!("creating hybrid data structure...");
+        println!("creating ranges...");
         let ranges = Ranges::new(&sbwt, sbwt.n_sets(), 7);
         let iterator = (0..lcs.len()).map(|index| lcs.access(index) as u8);
-        let lcs_simd = LcsSimd::from_iterator(iterator, lcs.len());
-        let pnsv_hybrid = PnsvHybrid {
-            ranges,
-            lcs_simd,
+        println!("creating lcs_simd...");
+        let lcs_simd = LcsSimd::from_iterator(iterator.clone(), lcs.len());
+        // println!("creating wavelet...");
+        // let wavelet = WWT::from_iterator(iterator, 7, 2);
+        // let pnsv_hybrid = PnsvHybrid {
+        //     ranges,
+        //     wavelet,
+        //     lcs_simd,
+        // };
+
+        println!("creating matrix...");
+        let matrix = PnsvMatrix::from_iterator(iterator, lcs.len(), 8, 10);
+        
+        let pnsv_dyn = PnsvDyn {
+            structures: [&ranges, &matrix, &lcs_simd]
         };
 
         // let lcs_index = StreamingIndex {
@@ -106,23 +126,34 @@ mod test {
         //     n: sbwt.n_sets(),
         //     k: sbwt.k(),
         // };
-        
-        let pnsv_hybrid_index = StreamingIndex {
+        // let pnsv_hybrid_index = StreamingIndex {
+        //     extend_right: &sbwt,
+        //     contract_left: &pnsv_hybrid,
+        //     n: sbwt.n_sets(),
+        //     k: sbwt.k(),
+        // };
+        let pnsv_dyn_index = StreamingIndex {
             extend_right: &sbwt,
-            contract_left: &pnsv_hybrid,
+            contract_left: &pnsv_dyn,
             n: sbwt.n_sets(),
             k: sbwt.k(),
         };
+
+        println!("running benchmarks...");
 
         let lower = 8;
         let upper = 31;
 
         for bound in 1..upper {
-            print!("hyb,{},", bound);
-            benchmark_bms_separate_queries(&pnsv_hybrid_index, &queries, bound);
+            print!("dyn,{},", bound);
+            benchmark_bms_separate_queries(&pnsv_dyn_index, &queries, bound);
             println!();
         }
-
+        // for bound in 1..upper {
+        //     print!("hyb,{},", bound);
+        //     benchmark_bms_separate_queries(&pnsv_hybrid_index, &queries, bound);
+        //     println!();
+        // }
         // for bound in 1..upper {
         //     print!("bp,{},", bound);
         //     benchmark_bms_separate_queries(&lcs_pnsv_bp_index, &queries, bound);
@@ -134,6 +165,34 @@ mod test {
         //     benchmark_bms_separate_queries(&lcs_index, &queries, bound);
         //     println!();
         // }
+    }
+
+    #[ignore]
+    #[test]
+    fn correctness() {
+        println!("loading data...");
+        let (index, lcs) = read_index_and_lcs();
+        let SbwtIndexVariant::SubsetMatrix(sbwt) = index;
+
+        let iterator = (0..lcs.len()).map(|index| lcs.access(index) as u8);
+        let lcs_simd = LcsSimd::from_iterator(iterator.clone(), lcs.len());
+        let wavelet = WWT::from_iterator(iterator, 7, 2);
+
+        let ten_percent = lcs.len() / 10;
+
+        for i in 0..lcs.len() {
+            for target_length in wavelet.lower_bound + 1..wavelet.lower_bound + wavelet.window_size {
+                let lcs_answer = lcs_simd.previous(i, target_length);
+                let wavelet_answer = wavelet.previous(i, target_length);
+                assert_eq!(lcs_answer, wavelet_answer, "p; i: {}, target_length: {}", i, target_length);
+                let lcs_answer = lcs_simd.next(i, target_length);
+                let wavelet_answer = wavelet.next(i, target_length);
+                assert_eq!(lcs_answer, wavelet_answer, "n; i: {}, target_length: {}", i, target_length);
+            }
+            if i % ten_percent == ten_percent - 1 {
+                println!("{}0%", 1 + i / ten_percent);
+            }
+        }
     }
 
     #[ignore]
@@ -169,5 +228,112 @@ mod test {
         print!("simd,{},", bound);
         benchmark_bms_separate_queries(&lcs_simd_index, &queries, bound);
         println!();
+    }
+
+    fn statistics_lcs_simd(lcs_simd: &LcsSimd, target_length: usize, bound: usize) -> (f64, f64, f64, f64) {
+        let n = lcs_simd.n;
+        let target_length = target_length as u8;
+
+        let mut successful_previous = 0;
+        let start_time = std::time::Instant::now();
+        for i in 0..n {
+            successful_previous += if lcs_simd.scan_left_bounded(i, target_length, bound).is_some() {
+                1
+            } else {
+                0
+            };
+        }
+        let end_time = std::time::Instant::now();
+        let nanos_per_previous = (end_time - start_time).as_nanos() as f64 / n as f64;
+        let percentage_previous = successful_previous as f64 / n as f64;
+
+        let mut successful_next = 0;
+        let start_time = std::time::Instant::now();
+        for i in 0..n {
+            successful_next += if lcs_simd.scan_left_bounded(i, target_length, bound).is_some() {
+                1
+            } else {
+                0
+            };
+        }
+        let end_time = std::time::Instant::now();
+        let nanos_per_next = (end_time - start_time).as_nanos() as f64 / n as f64;
+        let percentage_next = successful_next as f64 / n as f64;
+
+        (percentage_previous, percentage_next, nanos_per_next, nanos_per_previous)
+    }
+
+    fn statistics_pnsv_matrix(matrix: &PnsvMatrix, target_length: usize) -> (f64, f64) {
+        let n = matrix.width;
+
+        let start_time = std::time::Instant::now();
+        for i in 0..n {
+            let _ = matrix.previous(i, target_length);
+        }
+        let end_time = std::time::Instant::now();
+        let nanos_per_previous = (end_time - start_time).as_nanos() as f64 / n as f64;
+
+        let start_time = std::time::Instant::now();
+        for i in 0..n {
+            let _ = matrix.next(i, target_length);
+        }
+        let end_time = std::time::Instant::now();
+        let nanos_per_next = (end_time - start_time).as_nanos() as f64 / n as f64;
+
+        (nanos_per_previous, nanos_per_next)
+    }
+
+    #[ignore]
+    #[test]
+    fn simd_bounded_scan_time() {
+        let (index, lcs) = read_index_and_lcs();
+        let SbwtIndexVariant::SubsetMatrix(sbwt) = index;
+
+        let iterator = (0..lcs.len()).map(|index| lcs.access(index) as u8);
+
+        let lower_bound = 11;
+        let upper_bound = 13;
+
+        println!("creating lcs_simd...");
+        let lcs_simd = LcsSimd::from_iterator(iterator.clone(), lcs.len());
+
+        println!("creating matrix...");
+        let matrix = PnsvMatrix::from_iterator(iterator, lcs.len(), lower_bound, upper_bound);
+
+        println!("timing...");
+        let item_bound: usize = 1000;
+        let word_bound = item_bound.div_ceil(LcsSimd::LANES);
+
+        for target_length in lower_bound..=upper_bound {
+            let (
+                percentage_previous,
+                percentage_next,
+                nanos_per_next_scan,
+                nanos_per_previous_scan,
+            ) = statistics_lcs_simd(&lcs_simd, target_length, word_bound);
+
+            let (
+                nanos_per_previous_matrix,
+                nanos_per_next_matrix
+            ) = statistics_pnsv_matrix(&matrix, target_length);
+
+            println!("target_length: {}", target_length);
+            println!(
+                "%previous: {:.3} <> t_scan/t_bitvector: {:.3} ({:.3}/{:.3})",
+                percentage_previous,
+                nanos_per_previous_scan / nanos_per_previous_matrix,
+                nanos_per_previous_scan,
+                nanos_per_previous_matrix
+            );
+
+            println!(
+                "%next: {:.3} <> t_scan/t_bitvector: {:.3} ({:.3}/{:.3})",
+                percentage_next,
+                nanos_per_next_scan / nanos_per_next_matrix,
+                nanos_per_next_scan,
+                nanos_per_next_matrix
+            );
+            println!();
+        }
     }
 }

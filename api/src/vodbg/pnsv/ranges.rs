@@ -5,6 +5,7 @@ use crate::util::DNA_ALPHABET;
 
 /// Precompute the ranges in the SBWT index for each suffix of length k up to a given number. Use
 /// those range borders to perform ContractLeft. Each level has at most O(4^k) border values.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ranges {
     // note(mk): Maybe SIMD can be used here as well.
     pub levels: Vec<Vec<usize>>,
@@ -126,5 +127,20 @@ impl Ranges {
         }
         self.n
     }
+}
+
+impl super::Pnsv for Ranges {
+    #[inline]
+    fn previous(&self, index: usize, target_length: usize) -> usize {
+        self.previous(index, target_length)
+    }
+
+    #[inline]
+    fn next(&self, index: usize, target_length: usize) -> usize {
+        self.next(index, target_length)
+    }
+
+    #[inline]
+    fn max_target(&self) -> usize { self.levels.len() }
 }
 
