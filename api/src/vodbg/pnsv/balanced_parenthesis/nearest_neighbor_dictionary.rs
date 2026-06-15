@@ -208,7 +208,7 @@ impl<const SAMPLE_OFFSET: usize> NearestNeighbourDictionary<SAMPLE_OFFSET> {
     pub fn previous(&self, index_in_bitvector: usize) -> usize {
         let rank = self.rank(index_in_bitvector);
         if rank == 0 {
-            return self.bitvector_length;
+            return 0;
         }
         self.select(rank - 1)
     }

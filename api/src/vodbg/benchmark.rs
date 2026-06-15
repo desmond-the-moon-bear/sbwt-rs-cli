@@ -1,3 +1,5 @@
+// Code by Martin Kostadinov.
+
 #![allow(unused)]
 
 use crate::streaming_index::{ContractLeft, ExtendRight, StreamingIndex};
@@ -62,12 +64,13 @@ fn benchmark_bms_separate_queries<E, C>(
     // nanos_per_kmer.round() as usize
 }
 
-fn benchmark_bms_joined_queries_lcs(bound: usize) {}
+// fn benchmark_bms_joined_queries_lcs(bound: usize) {}
 
 #[cfg(test)]
-mod test {
+mod tests {
     use super::*;
     use crate::vodbg::pnsv::{
+        ABS,
         LcsPnsvBp,
         LcsSimd,
         PnsvDyn,
@@ -78,7 +81,7 @@ mod test {
     };
 
     // note(mk): Temporary solution for running the benchmark. Command to run these benchmarks:
-    // cargo t (--release) vodbg::benchmark -- --ignored --nocapture sbwt_path lcs_path query_path
+    // cargo t (--release) vodbg::test::comparison -- --ignored --nocapture sbwt_path lcs_path query_path
     #[ignore]
     #[test]
     fn comparison() {
@@ -237,7 +240,7 @@ mod test {
         let mut successful_previous = 0;
         let start_time = std::time::Instant::now();
         for i in 0..n {
-            successful_previous += if lcs_simd.scan_left_bounded(i, target_length, bound).is_some() {
+            successful_previous += if lcs_simd.scan_left_bounded(i, target_length, bound).is_ok() {
                 1
             } else {
                 0
@@ -250,7 +253,7 @@ mod test {
         let mut successful_next = 0;
         let start_time = std::time::Instant::now();
         for i in 0..n {
-            successful_next += if lcs_simd.scan_left_bounded(i, target_length, bound).is_some() {
+            successful_next += if lcs_simd.scan_left_bounded(i, target_length, bound).is_ok() {
                 1
             } else {
                 0
@@ -268,14 +271,14 @@ mod test {
 
         let start_time = std::time::Instant::now();
         for i in 0..n {
-            let _ = matrix.previous(i, target_length);
+            let _ = std::hint::black_box(matrix.previous(i, target_length));
         }
         let end_time = std::time::Instant::now();
         let nanos_per_previous = (end_time - start_time).as_nanos() as f64 / n as f64;
 
         let start_time = std::time::Instant::now();
         for i in 0..n {
-            let _ = matrix.next(i, target_length);
+            let _ = std::hint::black_box(matrix.next(i, target_length));
         }
         let end_time = std::time::Instant::now();
         let nanos_per_next = (end_time - start_time).as_nanos() as f64 / n as f64;
@@ -291,8 +294,8 @@ mod test {
 
         let iterator = (0..lcs.len()).map(|index| lcs.access(index) as u8);
 
-        let lower_bound = 11;
-        let upper_bound = 13;
+        let lower_bound = 8;
+        let upper_bound = 10;
 
         println!("creating lcs_simd...");
         let lcs_simd = LcsSimd::from_iterator(iterator.clone(), lcs.len());
@@ -331,6 +334,114 @@ mod test {
                 percentage_next,
                 nanos_per_next_scan / nanos_per_next_matrix,
                 nanos_per_next_scan,
+                nanos_per_next_matrix
+            );
+            println!();
+        }
+    }
+
+    fn statistics_lcs_simd_with_matrix_fallback(lcs_simd: &LcsSimd, matrix: &PnsvMatrix, target_length: usize, bound: usize) -> (f64, f64) {
+        let n = lcs_simd.n;
+        let target_length_u8 = target_length as u8;
+
+        let start_time = std::time::Instant::now();
+        for i in 0..n {
+            if lcs_simd.scan_left_bounded(i, target_length_u8, bound).is_err() {
+                let i = i.saturating_sub(LcsSimd::LANES * bound);
+                matrix.previous(i, target_length);
+            }
+        }
+        let end_time = std::time::Instant::now();
+        let nanos_per_previous = (end_time - start_time).as_nanos() as f64 / n as f64;
+
+        let start_time = std::time::Instant::now();
+        for i in 0..n {
+            if lcs_simd.scan_right_bounded(i, target_length_u8, bound).is_err() {
+                let i = i + LcsSimd::LANES * bound;
+                matrix.next(i, target_length);
+            }
+        }
+        let end_time = std::time::Instant::now();
+        let nanos_per_next = (end_time - start_time).as_nanos() as f64 / n as f64;
+
+        (nanos_per_next, nanos_per_previous)
+    }
+
+    fn statistics_augmented_bounded_scan(abs: &ABS, target_length: usize) -> (f64, f64) {
+        let n = abs.lcs_simd.len();
+        let target_length_u8 = target_length as u8;
+
+        let start_time = std::time::Instant::now();
+        for i in 0..n {
+            let _ = abs.previous(i, target_length);
+        }
+        let end_time = std::time::Instant::now();
+        let nanos_per_previous = (end_time - start_time).as_nanos() as f64 / n as f64;
+
+        let start_time = std::time::Instant::now();
+        for i in 0..n {
+            let _ = abs.next(i, target_length);
+        }
+        let end_time = std::time::Instant::now();
+        let nanos_per_next = (end_time - start_time).as_nanos() as f64 / n as f64;
+
+        (nanos_per_next, nanos_per_previous)
+    }
+
+    #[ignore]
+    #[test]
+    fn simd_bounded_scan_with_fallback_time() {
+        let (index, lcs) = read_index_and_lcs();
+        let SbwtIndexVariant::SubsetMatrix(sbwt) = index;
+
+        let iterator = (0..lcs.len()).map(|index| lcs.access(index) as u8);
+
+        let target_length_lower = 8;
+        let target_length_upper = 10;
+
+        println!("creating lcs_simd...");
+        let lcs_simd = LcsSimd::from_iterator(iterator.clone(), lcs.len());
+
+        println!("creating matrix...");
+        let matrix = PnsvMatrix::from_iterator(iterator.clone(), lcs.len(), target_length_lower, target_length_upper);
+
+        let item_bound: usize = 256;
+        let word_bound = item_bound.div_ceil(LcsSimd::LANES);
+
+        println!("creating augmented bounded scan...");
+        let abs = ABS::from_iterator(&lcs_simd, iterator, lcs.len(), word_bound, target_length_lower, target_length_upper);
+
+        println!("timing...");
+        for target_length in target_length_lower..=target_length_upper {
+            // let (
+            //     nanos_per_previous_abs,
+            //     nanos_per_next_abs
+            // ) = statistics_augmented_bounded_scan(&abs, target_length);
+
+            let (
+                nanos_per_previous_matrix_fallback,
+                nanos_per_next_matrix_fallback,
+            ) = statistics_lcs_simd_with_matrix_fallback(&lcs_simd, &matrix, target_length, word_bound);
+
+            let (
+                nanos_per_previous_matrix,
+                nanos_per_next_matrix
+            ) = statistics_pnsv_matrix(&matrix, target_length);
+
+            println!("target_length: {}", target_length);
+            // println!(
+            //     "augmented bounded scan    | previous: {:.3} | next: {:.3}",
+            //     nanos_per_previous_abs,
+            //     nanos_per_next_abs
+            // );
+            println!(
+                "scan with matrix fallback | previous: {:.3} | next: {:.3}",
+                nanos_per_previous_matrix_fallback,
+                nanos_per_next_matrix_fallback
+            );
+            println!(
+                "matrix only               | previous: {:.3} | next: {:.3}",
+                nanos_per_previous_matrix,
                 nanos_per_next_matrix
             );
             println!();

@@ -18,6 +18,7 @@ use simple_sds_sbwt::{
 
 pub use ranges::Ranges;
 pub use scan::LcsSimd;
+pub use scan::AugmentedBoundedScan as ABS;
 pub use wavelet::WindowedWaveletTree as WWT;
 pub use matrix::Matrix as PnsvMatrix;
 

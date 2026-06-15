@@ -54,6 +54,9 @@ impl Matrix {
     }
 
     pub fn previous(&self, index: usize, target_length: usize) -> usize {
+        if index >= self.width {
+            return self.width;
+        }
         if target_length < self.lower_bound || target_length > self.upper_bound {
             return 0;
         }
@@ -71,6 +74,9 @@ impl Matrix {
     }
 
     pub fn next(&self, index: usize, target_length: usize) -> usize {
+        if index >= self.width {
+            return self.width;
+        }
         if target_length < self.lower_bound || target_length > self.upper_bound {
             return self.width;
         }
