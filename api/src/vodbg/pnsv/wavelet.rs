@@ -1,9 +1,15 @@
+// Code by Martin Kostadinov.
+
 use simple_sds_sbwt::bit_vector::BitVector;
 use simple_sds_sbwt::ops::{BitVec, Rank, Select, SelectZero};
 use simple_sds_sbwt::raw_vector::{PushRaw, RawVector};
 
 use std::collections::vec_deque::VecDeque;
 
+/// A wavelet tree over a continuous subset of the whole (ordered) alphabet. Supports previous
+/// smaller and next smaller value operations in log(n) time where n is the size of the subset.
+/// The descriptor "bounded" in the name of this data structure was not chose to avoid ambiguity
+/// with the already existing BWT abbreviation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WindowedWaveletTree {
     pub lower_bound: usize,
@@ -12,10 +18,13 @@ pub struct WindowedWaveletTree {
     pub data: Vec<BitVector>,
 }
 
+/// A node in the wavelet tree. Contains indices for navigating the tree.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Node {
     pub parent: usize,
+    /// The smallest character in the range this node is responsible for.
     pub lower_bound: usize,
+    /// The size of the subset of the alphabet this node is responsible for.
     pub window_size: usize,
     pub left_child: usize,
     pub right_child: usize,
@@ -164,6 +173,7 @@ impl WindowedWaveletTree {
         }
     }
 
+    /// Climb up the tree to find the index of a given character in the source string.
     pub fn absolute_index(&self, mut node: usize, mut index_in_node: usize) -> usize {
         let mut parent;
         while node != 0 {
@@ -192,7 +202,7 @@ impl WindowedWaveletTree {
         index_in_node
     }
 
-    // Find the previous smaller value
+    // Find the previous smaller value.
     pub fn previous(&self, mut index: usize, target_length: usize) -> usize {
         if target_length <= self.lower_bound {
             return 0;
@@ -289,6 +299,7 @@ impl WindowedWaveletTree {
         result
     }
 
+    // Find the next smaller value.
     pub fn next(&self, mut index: usize, target_length: usize) -> usize {
         if target_length <= self.lower_bound {
             return self.len();

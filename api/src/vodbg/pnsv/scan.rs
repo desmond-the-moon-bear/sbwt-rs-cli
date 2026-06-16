@@ -191,6 +191,9 @@ impl Pnsv for LcsSimd {
     }
 }
 
+/// Performs a bounded SIMD scan to find a previous/next smaller value. If the scan fails it falls
+/// back to a NND on a bitvector which marks the first and last values which are smaller than a
+/// given target length in each region determined by a SIMD word.
 pub struct AugmentedBoundedScan<'a> {
     pub lcs_simd: &'a LcsSimd,
     pub target_length_lower: usize,
@@ -271,6 +274,11 @@ where
     underlying_values: I,
 }
 
+// note(mk): The purpose of this iterator is only to construct a Nearest Neighbour Dictionary out
+// of the first and last values which are smaller than the given target length in each SIMD word.
+// Since the SIMD scan always ends on a border between two words, then the answer to a query in the
+// NND will always be the first or last smaller value. Therefore, there is no need to store any
+// 1-bits inbetween.
 impl<T, I> SelectFromSimdWord<T, I> 
 where 
     T: Into<usize>,

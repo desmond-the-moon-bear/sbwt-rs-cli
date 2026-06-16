@@ -6,7 +6,7 @@ use simple_sds_sbwt::bit_vector::BitVector;
 use simple_sds_sbwt::ops::{BitVec, Rank, Select};
 use simple_sds_sbwt::raw_vector::{AccessRaw, RawVector};
 
-/// Supports previous smaller value for a range of target lengths.
+/// Supports previous/next smaller value queries for a range of target lengths.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Matrix {
     pub lower_bound: usize,

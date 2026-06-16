@@ -9,8 +9,8 @@ use crate::streaming_index::LcsArray;
 use super::pnsv::Pnsv;
 
 // note(mk): Temporary solution for reading input data.
-fn read_index_and_lcs() -> (SbwtIndexVariant, LcsArray) {
-    let mut args = std::env::args().skip(4);
+pub fn read_index_and_lcs(arguments_start: usize) -> (SbwtIndexVariant, LcsArray) {
+    let mut args = std::env::args().skip(arguments_start);
     let sbwt_path = args.next().expect("expected sbwt index path");
     let lcs_path = args.next().expect("expected lcs index path");
 
@@ -23,10 +23,10 @@ fn read_index_and_lcs() -> (SbwtIndexVariant, LcsArray) {
     (index, lcs)
 }
 
-fn read_query() -> Vec<Vec<u8>> {
+pub fn read_query(arguments_start: usize) -> Vec<Vec<u8>> {
     use crate::SeqStream;
 
-    let mut args = std::env::args().skip(6);
+    let mut args = std::env::args().skip(arguments_start);
     let query_path = args.next().expect("expected query path");
     let query_file = std::fs::File::open(query_path).unwrap();
     let buf_reader = std::io::BufReader::new(query_file);
@@ -40,7 +40,7 @@ fn read_query() -> Vec<Vec<u8>> {
     result
 }
 
-fn benchmark_bms_separate_queries<E, C>(
+pub fn benchmark_bms_separate_queries<E, C>(
     index: &StreamingIndex<'_, E, C>,
     queries: &[Vec<u8>],
     bound: usize,
@@ -86,11 +86,11 @@ mod tests {
     #[test]
     fn comparison() {
         println!("loading data...");
-        let (index, lcs) = read_index_and_lcs();
+        let (index, lcs) = read_index_and_lcs(4);
         let SbwtIndexVariant::SubsetMatrix(sbwt) = index;
         println!("lcs.len: {}", lcs.len());
         println!("index.n_sets: {}", sbwt.n_sets());
-        let queries = read_query();
+        let queries = read_query(6);
 
         // println!("creating standard bp structure...");
         // let lcs_pnsv = LcsPnsvBp::new(&lcs, 2048);
@@ -174,7 +174,7 @@ mod tests {
     #[test]
     fn correctness() {
         println!("loading data...");
-        let (index, lcs) = read_index_and_lcs();
+        let (index, lcs) = read_index_and_lcs(4);
         let SbwtIndexVariant::SubsetMatrix(sbwt) = index;
 
         let iterator = (0..lcs.len()).map(|index| lcs.access(index) as u8);
@@ -201,9 +201,9 @@ mod tests {
     #[ignore]
     #[test]
     fn simd_scan_compare() {
-        let (index, lcs) = read_index_and_lcs();
+        let (index, lcs) = read_index_and_lcs(4);
         let SbwtIndexVariant::SubsetMatrix(sbwt) = index;
-        let queries = read_query();
+        let queries = read_query(6);
 
         let iterator = (0..lcs.len()).map(|index| lcs.access(index) as u8);
         let lcs_simd = LcsSimd::from_iterator(iterator, lcs.len());
@@ -289,7 +289,7 @@ mod tests {
     #[ignore]
     #[test]
     fn simd_bounded_scan_time() {
-        let (index, lcs) = read_index_and_lcs();
+        let (index, lcs) = read_index_and_lcs(4);
         let SbwtIndexVariant::SubsetMatrix(sbwt) = index;
 
         let iterator = (0..lcs.len()).map(|index| lcs.access(index) as u8);
@@ -391,7 +391,7 @@ mod tests {
     #[ignore]
     #[test]
     fn simd_bounded_scan_with_fallback_time() {
-        let (index, lcs) = read_index_and_lcs();
+        let (index, lcs) = read_index_and_lcs(4);
         let SbwtIndexVariant::SubsetMatrix(sbwt) = index;
 
         let iterator = (0..lcs.len()).map(|index| lcs.access(index) as u8);
