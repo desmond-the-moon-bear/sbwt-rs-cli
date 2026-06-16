@@ -25,10 +25,6 @@ pub struct BpLevel {
     /// The original sequence of balanced parenthesis.
     pub parenthesis: BitVector,
 
-    // note(mk): The BitVector does not give access to the underlying data which is needed for some
-    // of the procedures so a pointer has to it has to be stored.
-    data: *const [u64],
-
     /// The extracted Nearest Neighbour Dictionary from the pioneers bit mask i.e. the bitvector
     /// with 1s in positions where a pioneer (and its match(?)) were located.
     pub pioneer_nnd: NND,
@@ -44,7 +40,6 @@ impl Bp {
         let mut len;
 
         loop {
-            let data: *const [u64] = parenthesis_raw.get_words() as *const [u64];
             len = parenthesis_raw.len();
 
             let mut parenthesis = BitVector::from(parenthesis_raw);
@@ -64,7 +59,6 @@ impl Bp {
             
             levels.push(BpLevel {
                 parenthesis,
-                data,
                 pioneer_nnd,
             });
 
@@ -125,7 +119,7 @@ impl Bp {
         if self.levels[level].parenthesis.get(index) {
             return index;
         }
-        let balanced_parenthesis =  unsafe { &(*self.levels[level].data) };
+        let balanced_parenthesis =  self.levels[level].parenthesis.as_ref().get_words();
         let potentially_matching = lookup::try_to_find_opening_in_block(balanced_parenthesis, index - 1, 1, self.block_size);
         if let Some(index) = potentially_matching {
             return index;
@@ -210,7 +204,7 @@ impl Bp {
             return index;
         }
 
-        let balanced_parenthesis =  unsafe { &(*self.levels[level].data) };
+        let balanced_parenthesis =  self.levels[level].parenthesis.as_ref().get_words();
         let potentially_enclosing = lookup::try_to_find_opening_in_block(balanced_parenthesis, index - 1, 1, self.block_size);
         if let Some(result) = potentially_enclosing {
             return result;
