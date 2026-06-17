@@ -1,27 +1,26 @@
 // Code by Martin Kostadinov.
 
 pub mod balanced_parenthesis;
+pub mod matrix;
 pub mod ranges;
 pub mod scan;
 pub mod wavelet;
-pub mod matrix;
 
 use balanced_parenthesis as bp;
 
-use crate::{ContractLeft, LcsArray};
-use simple_sds_sbwt::{
-    raw_vector::{
-        AccessRaw,
-        RawVector
-    }
-};
+use crate::ContractLeft;
+use crate::ExtendRight;
+use crate::LcsArray;
 
-pub use ranges::Ranges;
-pub use scan::LcsSimd;
-pub use scan::AugmentedBoundedScan as ABS;
-pub use wavelet::WindowedWaveletTree as WWT;
+pub use balanced_parenthesis::LcsPnsvBp;
+pub use balanced_parenthesis::PnsvBp;
 pub use matrix::Matrix as PnsvMatrix;
 pub use matrix::MatrixSux as PnsvMatrixSux;
+pub use ranges::Ranges;
+pub use scan::AugmentedBoundedScan as ABS;
+pub use scan::LcsSimd;
+pub use scan::ScanWithFallback;
+pub use wavelet::WindowedWaveletTree as WWT;
 
 /// Previous/Next Smaller value.
 pub trait Pnsv {
@@ -35,157 +34,6 @@ impl<T: ?Sized + Pnsv> ContractLeft for T {
         let new_start = self.previous(I.start, target_len);
         let new_end = self.next(I.end, target_len);
         new_start..new_end
-    }
-}
-
-/// Previous and Next Smaller Value using Balanced Parenthesis.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PnsvBp {
-    pub previous: bp::Bp,
-    pub next: bp::Bp,
-    pub count: usize,
-}
-
-impl PnsvBp {
-    /// Constructs a data structure which supports Previous and Next Smaller Value queries on the
-    /// values in the original array.
-    pub fn from_iterator<T, I>(values: I, count: usize, block_size: usize) -> Self
-    where
-        T: Ord + Copy,
-        I: Iterator<Item = T> + DoubleEndedIterator + Clone,
-    {
-        let mut stack = vec![];
-        let previous_smaller_bp_vector = Self::make_psv_bp_vector(values.clone(), count, &mut stack);
-        let next_smaller_bp_vector = Self::make_psv_bp_vector(values.rev(), count, &mut stack);
-
-        let previous = bp::Bp::new(previous_smaller_bp_vector, block_size);
-        let next = bp::Bp::new(next_smaller_bp_vector, block_size);
-
-        Self { previous, next, count }
-    }
-
-    /// Given an index in the original array finds the index of the previous smaller value.
-    #[inline]
-    pub fn previous(&self, index: usize) -> usize {
-        let parenthesis_index = self.previous.select(index);
-        let parent_parenthesis_index = self.previous.enclose(parenthesis_index);
-        self.previous.rank(parent_parenthesis_index)
-    }
-
-    /// Given an index in the original array finds the index of the next smaller value.
-    #[inline]
-    pub fn next(&self, index: usize) -> usize {
-        let reverse_index = self.count - 1 - index;
-        let parenthesis_index = self.next.select(reverse_index);
-        let parent_parenthesis_index = self.next.enclose(parenthesis_index);
-        let reverse_result_index = self.next.rank(parent_parenthesis_index);
-        self.count - 1 - reverse_result_index
-    }
-
-    /// Given an iterator of values constructs the balanced parenthesis representation of the
-    /// Previous Smaller Value tree. A PSV tree is such that each vertex's parent is the previous
-    /// smaller value in the array.
-    pub fn make_psv_bp_vector<T, I>(values: I, count: usize, stack: &mut Vec<T>) -> RawVector
-    where
-        T: Ord + Copy,
-        I: Iterator<Item = T>,
-    {
-        // The maximum height of the stack is the number of unique values that the array contains.
-        // In the case of the Longest Common Suffix array that would be k.
-        stack.clear();
-
-        let mut result = RawVector::with_len(count * 2, false);
-        let mut bit_iterator = 0;
-
-        for value in values {
-            loop {
-                if stack.is_empty() {
-                    break;
-                }
-
-                let previous_value = *stack.last().unwrap();
-                if previous_value < value {
-                    // The previous value is smaller, therefore it is this value's parent.
-                    break;
-                }
-
-                // The previous value is either greater than this value in which case it is a sibling
-                // or a child of a sibling of this value, or it is equal to this value in which case it
-                // is a sibling of this value in the PSV tree.
-                stack.pop();
-
-                // By moving the iterator forward we leave a 0 in the resulting bitvector which is
-                // equivalent to closing the parenthesis.
-                bit_iterator += 1;
-            }
-
-            result.set_bit(bit_iterator, true);
-            bit_iterator += 1;
-            stack.push(value);
-        }
-
-        result
-    }
-}
-
-pub struct LcsPnsvBp<'a> {
-    pub lcs: &'a LcsArray,
-    pub pnsv: PnsvBp,
-}
-
-impl<'a> LcsPnsvBp<'a> {
-    pub fn new(lcs: &'a LcsArray, block_size: usize) -> Self {
-        let iterator = (0..lcs.len()).map(|index| lcs.access(index));
-        let pnsv = PnsvBp::from_iterator(iterator, lcs.len(), block_size);
-        Self {
-            lcs,
-            pnsv,
-        }
-    }
-}
-
-impl<'a> ContractLeft for LcsPnsvBp<'a> {
-    #[allow(non_snake_case)]
-    fn contract_left(&self, I: std::ops::Range<usize>, target_len: usize) -> std::ops::Range<usize> {
-        let mut new_start = I.start;
-        let mut jump;
-        while 0 < new_start && self.lcs.access(new_start) >= target_len {
-            jump = self.pnsv.previous(new_start);
-            if new_start == jump {
-                new_start = 0;
-                break;
-            }
-            new_start = jump;
-        }
-        let mut new_end = I.end;
-        while new_end < self.lcs.len() && self.lcs.access(new_end) >= target_len {
-            jump = self.pnsv.next(new_end);
-            if new_end == jump {
-                new_end = self.lcs.len();
-                break;
-            }
-            new_end = jump;
-        }
-        new_start..new_end
-    }
-}
-
-pub struct PnsvHybrid {
-    pub ranges: Ranges,
-    pub wavelet: WWT,
-    pub lcs_simd: LcsSimd,
-}
-
-impl ContractLeft for PnsvHybrid {
-    #[allow(non_snake_case)]
-    fn contract_left(&self, I: std::ops::Range<usize>, target_len: usize) -> std::ops::Range<usize> {
-        if target_len <= self.ranges.max_target() {
-            return self.ranges.contract_left(I, target_len);
-        }
-        if target_len <= self.wavelet.max_target() {
-            return self.wavelet.contract_left(I.clone(), target_len);
-        }
-        self.lcs_simd.contract_left(I, target_len)
     }
 }
 
@@ -205,81 +53,96 @@ impl<'a, const LEVELS: usize> ContractLeft for PnsvDyn<'a, LEVELS> {
     }
 }
 
+// note(mk): Probably better to implement this with an enum_dispatch.
+pub struct PnsvDynOwned {
+    pub structures: Vec<Box<dyn Pnsv>>,
+}
+
+impl ContractLeft for PnsvDynOwned {
+    #[allow(non_snake_case)]
+    fn contract_left(&self, I: std::ops::Range<usize>, target_len: usize) -> std::ops::Range<usize> {
+        for i in 0..self.structures.len() - 1 {
+            if target_len <= self.structures[i].max_target() {
+                return self.structures[i].contract_left(I, target_len);
+            }
+        }
+        self.structures[self.structures.len() - 1].contract_left(I, target_len)
+    }
+}
+
+// For k=6 there are 4^7=4096(+2) bounds of ranges which is small enough to calculate. I.e.
+// this data structure calculates the results for target_length up to 7 inclusive. 
+const RANGES_UPPER_BOUND: usize = 7;
+
+// Experimentally the scan is fastest if the average length of the ranges it searches is below
+// around 200 i.e. the target length. This value is equal to floor(log_4(200)). I take the
+// floor to overestimate the bound the matrix is needed for. I.e. this procedure favours speed
+// over memory.
+const TARGET_LENGTH_LOG_4_FLOOR: usize = 3;
+
+pub fn pnsv_simd_fallback_matrix(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwned {
+    let count = lcs.len();
+
+    log::info!("[pnsv] creating ranges...");
+    let ranges = Ranges::new(extend, count, RANGES_UPPER_BOUND);
+    let ranges_box = Box::new(ranges);
+
+    let iterator = (0..count).map(|index| lcs.access(index) as u8);
+
+    // Experimentally determined, the ranges shrink 4-fold initially and afterwards the ratio
+    // between two consecutive average region lengths (e.g. region lengths for k=7 and k=8) becomes
+    // less than 4. Around that time as well the average range length becomes around 200 i.e. the
+    // target length. Therefore a simple logarithm should find the target length upper bound for
+    // the matrix solution.
+    let log_4 = (usize::BITS - count.leading_zeros()).div_ceil(2) as usize;
+
+    // log_4(count / 200) == log_4(count) - log_4(200)
+    let matrix_upper_bound = log_4 - TARGET_LENGTH_LOG_4_FLOOR; 
+
+    log::info!("[pnsv] creating matrix...");
+    let matrix = PnsvMatrix::from_iterator(iterator.clone(), count, RANGES_UPPER_BOUND + 1, matrix_upper_bound);
+    // let matrix = PnsvMatrixSux::from_iterator(iterator.clone(), count, RANGES_UPPER_BOUND + 1, matrix_upper_bound);
+
+    log::info!("[pnsv] creating lcs simd...");
+    let lcs_simd = LcsSimd::from_iterator(iterator, count);
+
+    // let swf = ScanWithFallback::new(lcs_simd, 8, matrix);
+    let swf = ScanWithFallback::new(lcs_simd, 6, matrix);
+    let swf_box = Box::new(swf);
+
+    PnsvDynOwned {
+        structures: vec![ranges_box, swf_box],
+    }
+}
+
+pub fn pnsv_abs_simd(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwned {
+    let count = lcs.len();
+
+    log::info!("[pnsv] creating ranges...");
+    const RANGES_UPPER_BOUND: usize = 7;
+    let ranges = Ranges::new(extend, count, RANGES_UPPER_BOUND);
+    let ranges_box = Box::new(ranges);
+
+    let iterator = (0..count).map(|index| lcs.access(index) as u8);
+
+    let log_4 = (usize::BITS - count.leading_zeros()).div_ceil(2) as usize;
+
+    // log_4(count / 200) == log_4(count) - log_4(200)
+    let matrix_upper_bound = log_4 - TARGET_LENGTH_LOG_4_FLOOR; 
+    
+    log::info!("[pnsv] creating lcs simd...");
+    let lcs_simd = LcsSimd::from_iterator(iterator.clone(), count);
+
+    log::info!("[pnsv] creating augmented bounded scan...");
+    let abs = ABS::from_iterator(lcs_simd, iterator, 8, RANGES_UPPER_BOUND + 1, matrix_upper_bound);
+    let abs_box = Box::new(abs);
+
+    PnsvDynOwned {
+        structures: vec![ranges_box, abs_box],
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::balanced_parenthesis as bp;
-    use super::*;
-
-    fn make_psv_tree<T, I>(values: I, count: usize) -> Vec<usize>
-    where
-        T: Ord + Copy,
-        I: Iterator<Item = T>,
-    {
-        let mut stack: Vec<(usize, T)> = vec![];
-
-        let mut result = vec![count; count];
-
-        for (index, value) in values.enumerate() {
-            loop {
-                if stack.is_empty() {
-                    break;
-                }
-                let (previous_index, previous_value) = *stack.last().unwrap();
-                if previous_value < value {
-                    result[index] = previous_index;
-                    break;
-                }
-                stack.pop();
-            }
-
-            stack.push((index, value));
-        }
-
-        result
-    }
-
-    #[test]
-    fn bp_method_random_sequence() {
-        use rand::distributions::uniform::Uniform;
-        use rand::distributions::Distribution;
-        use rand::rngs::StdRng;
-        use rand::SeedableRng;
-
-        let n = 50000;
-        let k = 31u8;
-        let mut rng = StdRng::from_seed([42; 32]);
-        let uniform = Uniform::from(0..k);
-        let numbers = uniform.sample_iter(&mut rng).take(n).collect::<Vec<_>>();
-
-        let answers = make_psv_tree(numbers.iter(), numbers.len());
-
-        let mut bp_value_stack = vec![];
-        let bp_vector = PnsvBp::make_psv_bp_vector(numbers.iter(), numbers.len(), &mut bp_value_stack);
-
-        for block_size in (10..=100).step_by(10) {
-            let psv_tree = bp::Bp::new(bp_vector.clone(), block_size);
-
-            for i in 0..n {
-                let parenthesis_index = psv_tree.select(i);
-                let parenthesis_index_of_parent = psv_tree.enclose(parenthesis_index);
-                if answers[i] == numbers.len() {
-                    assert!(
-                        parenthesis_index_of_parent == parenthesis_index,
-                        "Failed at i: {}, parenthesis_index: {}",
-                        i,
-                        parenthesis_index
-                    );
-                    println!("{i} -> null");
-                    continue;
-                }
-                let parent_index = psv_tree.rank(parenthesis_index_of_parent);
-                assert_eq!(
-                    answers[i], parent_index,
-                    "Failed at i: {}, parenthesis_index: {}",
-                    i, parenthesis_index
-                );
-                println!("{i} -> {}", parent_index);
-            }
-        }
-    }
+    // todo(mk): test ScanWithFallback...
 }

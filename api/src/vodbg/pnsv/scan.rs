@@ -191,23 +191,68 @@ impl Pnsv for LcsSimd {
     }
 }
 
+pub struct ScanWithFallback<P: Pnsv> {
+    pub simd: LcsSimd,
+    pub scan_word_bound: usize,
+    pub fallback: P,
+}
+
+impl<P: Pnsv> ScanWithFallback<P> {
+    pub fn new(simd: LcsSimd, scan_word_bound: usize, fallback: P) -> Self {
+        Self { simd, scan_word_bound, fallback }
+    }
+}
+
+impl<P: Pnsv> Pnsv for ScanWithFallback<P> {
+    fn previous(&self, index: usize, target_length: usize) -> usize {
+        if target_length > self.fallback.max_target() {
+            return self.simd.scan_left(index, target_length as u8);
+        }
+        let result = self.simd.scan_left_bounded(index, target_length as u8, self.scan_word_bound);
+        match result {
+            Ok(index) => index,
+            Err(continue_search_index) => {
+                self.fallback.previous(continue_search_index, target_length)
+            }
+        }
+    }
+
+    fn next(&self, index: usize, target_length: usize) -> usize {
+        if target_length > self.fallback.max_target() {
+            return self.simd.scan_right(index, target_length as u8);
+        }
+        let result = self.simd.scan_right_bounded(index, target_length as u8, self.scan_word_bound);
+        match result {
+            Ok(index) => index,
+            Err(continue_search_index) => {
+                self.fallback.next(continue_search_index, target_length)
+            }
+        }
+    }
+
+    fn max_target(&self) -> usize {
+        self.fallback.max_target()
+    }
+}
+
 /// Performs a bounded SIMD scan to find a previous/next smaller value. If the scan fails it falls
 /// back to a NND on a bitvector which marks the first and last values which are smaller than a
 /// given target length in each region determined by a SIMD word.
-pub struct AugmentedBoundedScan<'a> {
-    pub lcs_simd: &'a LcsSimd,
+pub struct AugmentedBoundedScan {
+    pub lcs_simd: LcsSimd,
     pub target_length_lower: usize,
     pub target_length_upper: usize,
     pub scan_word_bound: usize,
     pub levels: Vec<NND<16>>,
 }
 
-impl<'a> AugmentedBoundedScan<'a> {
-    pub fn from_iterator<T, I>(lcs_simd: &'a LcsSimd, input: I, n: usize, scan_word_bound: usize, target_length_lower: usize, target_length_upper: usize) -> Self
+impl AugmentedBoundedScan {
+    pub fn from_iterator<T, I>(lcs_simd: LcsSimd, input: I, scan_word_bound: usize, target_length_lower: usize, target_length_upper: usize) -> Self
     where
         T: Into<usize>,
         I: Iterator<Item = T> + Clone,
     {
+        let n = lcs_simd.len();
         let mut levels = Vec::with_capacity(target_length_upper - target_length_lower + 1);
 
         for target_length in target_length_lower..=target_length_upper {
@@ -226,8 +271,11 @@ impl<'a> AugmentedBoundedScan<'a> {
     }
 }
 
-impl<'a> Pnsv for AugmentedBoundedScan<'a> {
+impl Pnsv for AugmentedBoundedScan {
     fn previous(&self, index: usize, target_length: usize) -> usize {
+        if target_length > self.target_length_upper {
+            return self.lcs_simd.scan_left(index, target_length as u8);
+        }
         let result = self.lcs_simd.scan_left_bounded(index, target_length as u8, self.scan_word_bound);
         match result {
             Ok(index) => index,
@@ -243,6 +291,9 @@ impl<'a> Pnsv for AugmentedBoundedScan<'a> {
     }
 
     fn next(&self, index: usize, target_length: usize) -> usize {
+        if target_length > self.target_length_upper {
+            return self.lcs_simd.scan_right(index, target_length as u8);
+        }
         let result = self.lcs_simd.scan_right_bounded(index, target_length as u8, self.scan_word_bound);
         match result {
             Ok(index) => index,
@@ -255,6 +306,11 @@ impl<'a> Pnsv for AugmentedBoundedScan<'a> {
                 }
             }
         }
+    }
+    
+    #[inline]
+    fn max_target(&self) -> usize {
+        self.target_length_upper
     }
 }
 
@@ -644,9 +700,9 @@ mod tests {
         let target_length_upper = 5;
 
         let lcs_simd = LcsSimd::from_iterator(items.iter().cloned(), items.len());
-        let abs = AugmentedBoundedScan::from_iterator(&lcs_simd, items.iter().cloned(), lcs_simd.len(), 0, target_length_lower, target_length_upper);
+        let abs = AugmentedBoundedScan::from_iterator(lcs_simd.clone(), items.iter().cloned(), 0, target_length_lower, target_length_upper);
 
-        for target_length in target_length_lower..=target_length_upper {
+        for target_length in target_length_lower..=target_length_upper+1 {
             for i in 0..items.len() {
                 assert_eq!(
                     abs.previous(i, target_length),
