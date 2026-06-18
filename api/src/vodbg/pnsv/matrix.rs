@@ -27,6 +27,10 @@ impl Matrix {
             rows_raw.push(RawVector::with_len(width, false));
         }
 
+        let ten_percent = width / 10;
+        let mut border = ten_percent;
+        let mut percent_count = 0;
+
         for (index, item) in input.enumerate() {
             let value = item.into();
             for target_length in lower_bound..=upper_bound {
@@ -34,6 +38,11 @@ impl Matrix {
                 if value < target_length {
                     rows_raw[row_index].set_bit(index, true);
                 }
+            }
+            if index >= border {
+                border += ten_percent;
+                percent_count += 1;
+                log::info!("[pnsv::matrix] {}0%", percent_count);
             }
         }
         

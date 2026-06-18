@@ -20,6 +20,10 @@ impl LcsSimd {
         T: Into<u8>,
         I: Iterator<Item = T>,
     {
+        let ten_percent = n / 10;
+        let mut border = ten_percent;
+        let mut percent_count = 0;
+
         #[allow(clippy::manual_div_ceil)]
         let mut words = Vec::with_capacity((n + Self::LANES - 1) / Self::LANES);
         let mut array = Self::ZERO;
@@ -29,6 +33,12 @@ impl LcsSimd {
                 array = Self::ZERO;
             }
             array[i % Self::LANES] = item.into();
+
+            if i >= border {
+                border += ten_percent;
+                percent_count += 1;
+                log::info!("[pnsv::scan::LcsSimd] {}0%", percent_count);
+            }
         }
         words.push(Word::new(array));
 

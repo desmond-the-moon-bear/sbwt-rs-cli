@@ -53,7 +53,7 @@ impl<'a, const LEVELS: usize> ContractLeft for PnsvDyn<'a, LEVELS> {
     }
 }
 
-// note(mk): Probably better to implement this with an enum_dispatch.
+// note(mk): Probably better to implement this with enum_dispatch.
 pub struct PnsvDynOwned {
     pub structures: Vec<Box<dyn Pnsv>>,
 }
@@ -72,19 +72,26 @@ impl ContractLeft for PnsvDynOwned {
 
 // For k=6 there are 4^7=4096(+2) bounds of ranges which is small enough to calculate. I.e.
 // this data structure calculates the results for target_length up to 7 inclusive. 
-const RANGES_UPPER_BOUND: usize = 7;
+const DEFAULT_RANGES_UPPER_BOUND: usize = 7;
 
 // Experimentally the scan is fastest if the average length of the ranges it searches is below
 // around 200 i.e. the target length. This value is equal to floor(log_4(200)). I take the
-// floor to overestimate the bound the matrix is needed for. I.e. this procedure favours speed
-// over memory.
+// floor to overestimate the bound the matrix is needed for.
 const TARGET_LENGTH_LOG_4_FLOOR: usize = 3;
 
 pub fn pnsv_simd_fallback_matrix(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwned {
     let count = lcs.len();
 
     log::info!("[pnsv] creating ranges...");
-    let ranges = Ranges::new(extend, count, RANGES_UPPER_BOUND);
+
+    let mut ranges_upper_bound = 0;
+    let mut bits_in_current_level_of_ranges = usize::BITS as usize * 4;
+    while bits_in_current_level_of_ranges < count {
+        ranges_upper_bound += 1;
+        bits_in_current_level_of_ranges *= 4;
+    }
+
+    let ranges = Ranges::new(extend, count, ranges_upper_bound);
     let ranges_box = Box::new(ranges);
 
     let iterator = (0..count).map(|index| lcs.access(index) as u8);
@@ -100,8 +107,8 @@ pub fn pnsv_simd_fallback_matrix(extend: &impl ExtendRight, lcs: &LcsArray) -> P
     let matrix_upper_bound = log_4 - TARGET_LENGTH_LOG_4_FLOOR; 
 
     log::info!("[pnsv] creating matrix...");
-    let matrix = PnsvMatrix::from_iterator(iterator.clone(), count, RANGES_UPPER_BOUND + 1, matrix_upper_bound);
-    // let matrix = PnsvMatrixSux::from_iterator(iterator.clone(), count, RANGES_UPPER_BOUND + 1, matrix_upper_bound);
+    let matrix = PnsvMatrix::from_iterator(iterator.clone(), count, ranges_upper_bound + 1, matrix_upper_bound);
+    // let matrix = PnsvMatrixSux::from_iterator(iterator.clone(), count, ranges_upper_bound + 1, matrix_upper_bound);
 
     log::info!("[pnsv] creating lcs simd...");
     let lcs_simd = LcsSimd::from_iterator(iterator, count);
@@ -110,8 +117,53 @@ pub fn pnsv_simd_fallback_matrix(extend: &impl ExtendRight, lcs: &LcsArray) -> P
     let swf = ScanWithFallback::new(lcs_simd, 6, matrix);
     let swf_box = Box::new(swf);
 
+    log::info!("[pnsv] target length ranges: 1:{}:{}:..", ranges_upper_bound, matrix_upper_bound);
+
     PnsvDynOwned {
         structures: vec![ranges_box, swf_box],
+    }
+}
+
+pub fn pnsv_matrix_simd(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwned {
+    let count = lcs.len();
+
+    log::info!("[pnsv] creating ranges...");
+
+    let mut ranges_upper_bound = 0;
+    let mut bits_in_current_level_of_ranges = usize::BITS as usize * 4;
+    while bits_in_current_level_of_ranges < count {
+        ranges_upper_bound += 1;
+        bits_in_current_level_of_ranges *= 4;
+    }
+
+    let ranges = Ranges::new(extend, count, ranges_upper_bound);
+    let ranges_box = Box::new(ranges);
+
+    let iterator = (0..count).map(|index| lcs.access(index) as u8);
+
+    // Experimentally determined, the ranges shrink 4-fold initially and afterwards the ratio
+    // between two consecutive average region lengths (e.g. region lengths for k=7 and k=8) becomes
+    // less than 4. Around that time as well the average range length becomes around 200 i.e. the
+    // target length. Therefore a simple logarithm should find the target length upper bound for
+    // the matrix solution.
+    let log_4 = (usize::BITS - count.leading_zeros()).div_ceil(2) as usize;
+
+    // log_4(count / 200) == log_4(count) - log_4(200)
+    let matrix_upper_bound = log_4 - TARGET_LENGTH_LOG_4_FLOOR; 
+
+    log::info!("[pnsv] creating matrix...");
+    // let matrix = PnsvMatrix::from_iterator(iterator.clone(), count, ranges_upper_bound + 1, matrix_upper_bound);
+    let matrix = PnsvMatrixSux::from_iterator(iterator.clone(), count, ranges_upper_bound + 1, matrix_upper_bound);
+    let matrix_box = Box::new(matrix);
+
+    log::info!("[pnsv] creating lcs simd...");
+    let lcs_simd = LcsSimd::from_iterator(iterator, count);
+    let lcs_simd_box = Box::new(lcs_simd);
+
+    log::info!("[pnsv] target length ranges: 1:{}:{}:..", ranges_upper_bound, matrix_upper_bound);
+
+    PnsvDynOwned {
+        structures: vec![ranges_box, matrix_box, lcs_simd_box],
     }
 }
 
