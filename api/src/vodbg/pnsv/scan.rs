@@ -220,7 +220,7 @@ impl<P: Pnsv> Pnsv for ScanWithFallback<P> {
         if target_length > self.fallback.max_target() {
             return self.simd.scan_left(index, target_length as u8);
         }
-        if target_length <= self.fallback.max_target() - Self::SCAN_WITH_FALLBACK_RANGE {
+        if target_length < self.fallback.max_target() - Self::SCAN_WITH_FALLBACK_RANGE {
             return self.fallback.previous(index, target_length);
         }
         let result = self.simd.scan_left_bounded(index, target_length as u8, self.scan_word_bound);
@@ -236,7 +236,7 @@ impl<P: Pnsv> Pnsv for ScanWithFallback<P> {
         if target_length > self.fallback.max_target() {
             return self.simd.scan_right(index, target_length as u8);
         }
-        if target_length <= self.fallback.max_target() - Self::SCAN_WITH_FALLBACK_RANGE {
+        if target_length < self.fallback.max_target() - Self::SCAN_WITH_FALLBACK_RANGE {
             return self.fallback.next(index, target_length);
         }
         let result = self.simd.scan_right_bounded(index, target_length as u8, self.scan_word_bound);

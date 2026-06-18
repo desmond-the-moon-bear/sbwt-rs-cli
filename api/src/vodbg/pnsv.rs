@@ -26,11 +26,19 @@ pub use wavelet::WindowedWaveletTree as WWT;
 pub trait Pnsv {
     fn previous(&self, index: usize, target_length: usize) -> usize;
     fn next(&self, index: usize, target_length: usize) -> usize;
+    fn override_contract_left(&self) -> bool { false }
+    fn overriden_contract_left(&self, I: std::ops::Range<usize>, target_len: usize) -> std::ops::Range<usize> { 0..0 }
     fn max_target(&self) -> usize { 0 }
 }
 
 impl<T: ?Sized + Pnsv> ContractLeft for T {
     fn contract_left(&self, I: std::ops::Range<usize>, target_len: usize) -> std::ops::Range<usize> {
+        if self.override_contract_left() {
+            // note(mk): Godbolt says that if the method is "overriden" by changing the default
+            // implementation of Pnsv::override_contract_left the compiler will optimise this
+            // condition away and just include the code of the overriden method.
+            return self.overriden_contract_left(I, target_len);
+        }
         let new_start = self.previous(I.start, target_len);
         let new_end = self.next(I.end, target_len);
         new_start..new_end
@@ -58,9 +66,31 @@ pub struct PnsvDynOwned {
     pub structures: Vec<Box<dyn Pnsv>>,
 }
 
-impl ContractLeft for PnsvDynOwned {
+impl Pnsv for PnsvDynOwned {
+    fn previous(&self, index: usize, target_length: usize) -> usize {
+        for i in 0..self.structures.len() - 1 {
+            if target_length <= self.structures[i].max_target() {
+                return self.structures[i].previous(index, target_length);
+            }
+        }
+        self.structures[self.structures.len() - 1].previous(index, target_length)
+    }
+
+    fn next(&self, index: usize, target_length: usize) -> usize {
+        for i in 0..self.structures.len() - 1 {
+            if target_length <= self.structures[i].max_target() {
+                return self.structures[i].next(index, target_length);
+            }
+        }
+        self.structures[self.structures.len() - 1].next(index, target_length)
+    }
+
+    fn override_contract_left(&self) -> bool {
+        true
+    }
+
     #[allow(non_snake_case)]
-    fn contract_left(&self, I: std::ops::Range<usize>, target_len: usize) -> std::ops::Range<usize> {
+    fn overriden_contract_left(&self, I: std::ops::Range<usize>, target_len: usize) -> std::ops::Range<usize> {
         for i in 0..self.structures.len() - 1 {
             if target_len <= self.structures[i].max_target() {
                 return self.structures[i].contract_left(I, target_len);
@@ -71,8 +101,7 @@ impl ContractLeft for PnsvDynOwned {
 }
 
 // Experimentally the scan is fastest if the average length of the ranges it searches is below
-// around 200 i.e. the target length. This value is equal to floor(log_4(200)). I take the
-// floor to overestimate the bound the matrix is needed for.
+// around 200 i.e. the target length. This value is equal to approx log_4(200).
 const TARGET_LENGTH_LOG_4_FLOOR: usize = 4;
 
 pub fn pnsv_simd_fallback_matrix(extend: &impl ExtendRight, lcs: &LcsArray, scan_bound: usize) -> PnsvDynOwned {
@@ -103,12 +132,13 @@ pub fn pnsv_simd_fallback_matrix(extend: &impl ExtendRight, lcs: &LcsArray, scan
     let log_4 = (usize::BITS - count.leading_zeros()).div_ceil(2) as usize;
 
     // log_4(count / 200) == log_4(count) - log_4(200)
-    let matrix_upper_bound = log_4 - TARGET_LENGTH_LOG_4_FLOOR; 
+    let mut matrix_upper_bound = log_4 - TARGET_LENGTH_LOG_4_FLOOR; 
+    matrix_upper_bound = matrix_upper_bound.min(ranges_upper_bound + 1 + matrix::MAX_ROWS);
 
     if matrix_upper_bound > ranges_upper_bound {
         log::info!("[pnsv_simd_fallback_matrix] creating matrix...");
-        let matrix = PnsvMatrix::from_iterator(iterator.clone(), count, ranges_upper_bound + 1, matrix_upper_bound);
-        // let matrix = PnsvMatrixSux::from_iterator(iterator.clone(), count, ranges_upper_bound + 1, matrix_upper_bound);
+        // let matrix = PnsvMatrix::from_iterator(iterator.clone(), count, ranges_upper_bound + 1, matrix_upper_bound);
+        let matrix = PnsvMatrixSux::from_iterator(iterator.clone(), count, ranges_upper_bound + 1, matrix_upper_bound);
 
         log::info!("[pnsv_simd_fallback_matrix] creating lcs simd...");
         let lcs_simd = LcsSimd::from_iterator(iterator, count);
@@ -161,12 +191,13 @@ pub fn pnsv_matrix_simd(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwn
     let log_4 = (usize::BITS - count.leading_zeros()).div_ceil(2) as usize;
 
     // log_4(count / 200) == log_4(count) - log_4(200)
-    let matrix_upper_bound = log_4 - TARGET_LENGTH_LOG_4_FLOOR; 
+    let mut matrix_upper_bound = log_4 - TARGET_LENGTH_LOG_4_FLOOR; 
+    matrix_upper_bound = matrix_upper_bound.min(ranges_upper_bound + 1 + matrix::MAX_ROWS);
 
     if matrix_upper_bound > ranges_upper_bound {
         log::info!("[pnsv_matrix_simd] creating matrix...");
-        let matrix = PnsvMatrix::from_iterator(iterator.clone(), count, ranges_upper_bound + 1, matrix_upper_bound);
-        // let matrix = PnsvMatrixSux::from_iterator(iterator.clone(), count, ranges_upper_bound + 1, matrix_upper_bound);
+        // let matrix = PnsvMatrix::from_iterator(iterator.clone(), count, ranges_upper_bound + 1, matrix_upper_bound);
+        let matrix = PnsvMatrixSux::from_iterator(iterator.clone(), count, ranges_upper_bound + 1, matrix_upper_bound);
         let matrix_box = Box::new(matrix);
         structures.push(matrix_box);
     }
