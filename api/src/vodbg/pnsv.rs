@@ -75,7 +75,7 @@ impl ContractLeft for PnsvDynOwned {
 // floor to overestimate the bound the matrix is needed for.
 const TARGET_LENGTH_LOG_4_FLOOR: usize = 3;
 
-pub fn pnsv_simd_fallback_matrix(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwned {
+pub fn pnsv_simd_fallback_matrix(extend: &impl ExtendRight, lcs: &LcsArray, scan_bound: usize) -> PnsvDynOwned {
     let count = lcs.len();
 
     log::info!("[pnsv_simd_fallback_matrix] creating ranges...");
@@ -109,8 +109,7 @@ pub fn pnsv_simd_fallback_matrix(extend: &impl ExtendRight, lcs: &LcsArray) -> P
     log::info!("[pnsv_simd_fallback_matrix] creating lcs simd...");
     let lcs_simd = LcsSimd::from_iterator(iterator, count);
 
-    // let swf = ScanWithFallback::new(lcs_simd, 8, matrix);
-    let swf = ScanWithFallback::new(lcs_simd, 6, matrix);
+    let swf = ScanWithFallback::new(lcs_simd, scan_bound, matrix);
     let swf_box = Box::new(swf);
 
     log::info!("[pnsv_simd_fallback_matrix] target length ranges: 1:{}:{}:..", ranges_upper_bound, matrix_upper_bound);
@@ -123,7 +122,7 @@ pub fn pnsv_simd_fallback_matrix(extend: &impl ExtendRight, lcs: &LcsArray) -> P
 pub fn pnsv_matrix_simd(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwned {
     let count = lcs.len();
 
-    log::info!("[pnsv] creating ranges...");
+    log::info!("[pnsv_matrix_simd] creating ranges...");
     let mut ranges_upper_bound = 0;
     let mut bits_in_current_level_of_ranges = usize::BITS as usize * 4;
     while bits_in_current_level_of_ranges < count {
@@ -147,8 +146,8 @@ pub fn pnsv_matrix_simd(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwn
     let matrix_upper_bound = log_4 - TARGET_LENGTH_LOG_4_FLOOR; 
 
     log::info!("[pnsv_matrix_simd] creating matrix...");
-    // let matrix = PnsvMatrix::from_iterator(iterator.clone(), count, ranges_upper_bound + 1, matrix_upper_bound);
-    let matrix = PnsvMatrixSux::from_iterator(iterator.clone(), count, ranges_upper_bound + 1, matrix_upper_bound);
+    let matrix = PnsvMatrix::from_iterator(iterator.clone(), count, ranges_upper_bound + 1, matrix_upper_bound);
+    // let matrix = PnsvMatrixSux::from_iterator(iterator.clone(), count, ranges_upper_bound + 1, matrix_upper_bound);
     let matrix_box = Box::new(matrix);
 
     log::info!("[pnsv_matrix_simd] creating lcs simd...");

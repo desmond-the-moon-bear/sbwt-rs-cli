@@ -17,7 +17,12 @@ impl Ranges {
     pub const MAX_K: usize = 9;
 
     pub fn new<E: ExtendRight>(index: &E, n: usize, max_k: usize) -> Self {
-        assert!(max_k < Self::MAX_K, "This data structure should be used only for small values of k.");
+        let max_k = if max_k > Self::MAX_K {
+            log::warn!("This structure should be used only for small values of k. Provided was: {}, max is: {}.", max_k, Self::MAX_K);
+            Self::MAX_K
+        } else {
+            max_k
+        };
 
         let max_k = max_k.max(1);
         let mut levels: Vec<Vec<usize>> = vec![];

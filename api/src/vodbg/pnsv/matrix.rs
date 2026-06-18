@@ -42,7 +42,7 @@ impl Matrix {
             if index >= border {
                 border += ten_percent;
                 percent_count += 1;
-                log::info!("[Matrix::from_iterator] {}0%", percent_count);
+                log::info!("[Matrix::from_iterator] scanning... {}0%", percent_count);
             }
         }
         
@@ -172,12 +172,13 @@ impl MatrixSux {
             if index >= border {
                 border += ten_percent;
                 percent_count += 1;
-                log::info!("[MatrixSux::from_iterator] {}0%", percent_count);
+                log::info!("[MatrixSux::from_iterator] scanning... {}0%", percent_count);
             }
         }
-        
+ 
         let mut rows: Vec<RowSux> = Vec::with_capacity(rows_raw.len());
-        for row in rows_raw {
+        for (index, row) in rows_raw.into_iter().enumerate() {
+            log::info!("[MatrixSux::from_iterator] building rank and select for row {}...", index);
             let rank = Rank9::new(row);
             let select = SelectAdapt::new(rank);
             rows.push(select);
