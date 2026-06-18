@@ -208,6 +208,8 @@ pub struct ScanWithFallback<P: Pnsv> {
 }
 
 impl<P: Pnsv> ScanWithFallback<P> {
+    pub const SCAN_WITH_FALLBACK_RANGE: usize = 2;
+
     pub fn new(simd: LcsSimd, scan_word_bound: usize, fallback: P) -> Self {
         Self { simd, scan_word_bound, fallback }
     }
@@ -217,6 +219,9 @@ impl<P: Pnsv> Pnsv for ScanWithFallback<P> {
     fn previous(&self, index: usize, target_length: usize) -> usize {
         if target_length > self.fallback.max_target() {
             return self.simd.scan_left(index, target_length as u8);
+        }
+        if target_length <= self.fallback.max_target() - Self::SCAN_WITH_FALLBACK_RANGE {
+            return self.fallback.previous(index, target_length);
         }
         let result = self.simd.scan_left_bounded(index, target_length as u8, self.scan_word_bound);
         match result {
@@ -230,6 +235,9 @@ impl<P: Pnsv> Pnsv for ScanWithFallback<P> {
     fn next(&self, index: usize, target_length: usize) -> usize {
         if target_length > self.fallback.max_target() {
             return self.simd.scan_right(index, target_length as u8);
+        }
+        if target_length <= self.fallback.max_target() - Self::SCAN_WITH_FALLBACK_RANGE {
+            return self.fallback.next(index, target_length);
         }
         let result = self.simd.scan_right_bounded(index, target_length as u8, self.scan_word_bound);
         match result {

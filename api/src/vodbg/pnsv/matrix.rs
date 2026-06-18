@@ -47,7 +47,8 @@ impl Matrix {
         }
         
         let mut rows: Vec<BitVector> = Vec::with_capacity(rows_raw.len());
-        for row in rows_raw {
+        for (index, row) in rows_raw.into_iter().enumerate() {
+            log::info!("[Matrix::from_iterator] building rank and select for row {}...", index);
             let mut bit_vector: BitVector = row.into();
             bit_vector.enable_rank();
             bit_vector.enable_select();
