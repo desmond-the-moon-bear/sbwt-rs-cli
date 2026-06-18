@@ -37,7 +37,7 @@ impl LcsSimd {
             if i >= border {
                 border += ten_percent;
                 percent_count += 1;
-                log::info!("[pnsv::scan::LcsSimd] {}0%", percent_count);
+                log::info!("[LcsSimd] {}0%", percent_count);
             }
         }
         words.push(Word::new(array));

@@ -70,10 +70,6 @@ impl ContractLeft for PnsvDynOwned {
     }
 }
 
-// For k=6 there are 4^7=4096(+2) bounds of ranges which is small enough to calculate. I.e.
-// this data structure calculates the results for target_length up to 7 inclusive. 
-const DEFAULT_RANGES_UPPER_BOUND: usize = 7;
-
 // Experimentally the scan is fastest if the average length of the ranges it searches is below
 // around 200 i.e. the target length. This value is equal to floor(log_4(200)). I take the
 // floor to overestimate the bound the matrix is needed for.
@@ -90,7 +86,7 @@ pub fn pnsv_simd_fallback_matrix(extend: &impl ExtendRight, lcs: &LcsArray) -> P
         ranges_upper_bound += 1;
         bits_in_current_level_of_ranges *= 4;
     }
-
+    ranges_upper_bound = ranges_upper_bound.min(Ranges::MAX_K);
     let ranges = Ranges::new(extend, count, ranges_upper_bound);
     let ranges_box = Box::new(ranges);
 
@@ -128,7 +124,6 @@ pub fn pnsv_matrix_simd(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwn
     let count = lcs.len();
 
     log::info!("[pnsv] creating ranges...");
-
     let mut ranges_upper_bound = 0;
     let mut bits_in_current_level_of_ranges = usize::BITS as usize * 4;
     while bits_in_current_level_of_ranges < count {
@@ -171,8 +166,14 @@ pub fn pnsv_abs_simd(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwned 
     let count = lcs.len();
 
     log::info!("[pnsv_abs_simd] creating ranges...");
-    const RANGES_UPPER_BOUND: usize = 7;
-    let ranges = Ranges::new(extend, count, RANGES_UPPER_BOUND);
+    let mut ranges_upper_bound = 0;
+    let mut bits_in_current_level_of_ranges = usize::BITS as usize * 4;
+    while bits_in_current_level_of_ranges < count {
+        ranges_upper_bound += 1;
+        bits_in_current_level_of_ranges *= 4;
+    }
+    ranges_upper_bound = ranges_upper_bound.min(Ranges::MAX_K);
+    let ranges = Ranges::new(extend, count, ranges_upper_bound);
     let ranges_box = Box::new(ranges);
 
     let iterator = (0..count).map(|index| lcs.access(index) as u8);
@@ -186,7 +187,7 @@ pub fn pnsv_abs_simd(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwned 
     let lcs_simd = LcsSimd::from_iterator(iterator.clone(), count);
 
     log::info!("[pnsv_abs_simd] creating augmented bounded scan...");
-    let abs = ABS::from_iterator(lcs_simd, iterator, 8, RANGES_UPPER_BOUND + 1, matrix_upper_bound);
+    let abs = ABS::from_iterator(lcs_simd, iterator, 8, ranges_upper_bound + 1, matrix_upper_bound);
     let abs_box = Box::new(abs);
 
     PnsvDynOwned {
