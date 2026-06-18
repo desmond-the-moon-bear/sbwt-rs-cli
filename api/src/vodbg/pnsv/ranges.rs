@@ -14,8 +14,10 @@ pub struct Ranges {
 }
 
 impl Ranges {
+    pub const MAX_K: usize = 9;
+
     pub fn new<E: ExtendRight>(index: &E, n: usize, max_k: usize) -> Self {
-        assert!(max_k < 10, "This data structure should be used only for small values of k.");
+        assert!(max_k < Self::MAX_K, "This data structure should be used only for small values of k.");
 
         let max_k = max_k.max(1);
         let mut levels: Vec<Vec<usize>> = vec![];

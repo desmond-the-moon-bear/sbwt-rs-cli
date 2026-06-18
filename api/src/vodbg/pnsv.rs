@@ -82,7 +82,7 @@ const TARGET_LENGTH_LOG_4_FLOOR: usize = 3;
 pub fn pnsv_simd_fallback_matrix(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwned {
     let count = lcs.len();
 
-    log::info!("[pnsv] creating ranges...");
+    log::info!("[pnsv_simd_fallback_matrix] creating ranges...");
 
     let mut ranges_upper_bound = 0;
     let mut bits_in_current_level_of_ranges = usize::BITS as usize * 4;
@@ -106,18 +106,18 @@ pub fn pnsv_simd_fallback_matrix(extend: &impl ExtendRight, lcs: &LcsArray) -> P
     // log_4(count / 200) == log_4(count) - log_4(200)
     let matrix_upper_bound = log_4 - TARGET_LENGTH_LOG_4_FLOOR; 
 
-    log::info!("[pnsv] creating matrix...");
+    log::info!("[pnsv_simd_fallback_matrix] creating matrix...");
     let matrix = PnsvMatrix::from_iterator(iterator.clone(), count, ranges_upper_bound + 1, matrix_upper_bound);
     // let matrix = PnsvMatrixSux::from_iterator(iterator.clone(), count, ranges_upper_bound + 1, matrix_upper_bound);
 
-    log::info!("[pnsv] creating lcs simd...");
+    log::info!("[pnsv_simd_fallback_matrix] creating lcs simd...");
     let lcs_simd = LcsSimd::from_iterator(iterator, count);
 
     // let swf = ScanWithFallback::new(lcs_simd, 8, matrix);
     let swf = ScanWithFallback::new(lcs_simd, 6, matrix);
     let swf_box = Box::new(swf);
 
-    log::info!("[pnsv] target length ranges: 1:{}:{}:..", ranges_upper_bound, matrix_upper_bound);
+    log::info!("[pnsv_simd_fallback_matrix] target length ranges: 1:{}:{}:..", ranges_upper_bound, matrix_upper_bound);
 
     PnsvDynOwned {
         structures: vec![ranges_box, swf_box],
@@ -135,7 +135,7 @@ pub fn pnsv_matrix_simd(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwn
         ranges_upper_bound += 1;
         bits_in_current_level_of_ranges *= 4;
     }
-
+    ranges_upper_bound = ranges_upper_bound.min(Ranges::MAX_K);
     let ranges = Ranges::new(extend, count, ranges_upper_bound);
     let ranges_box = Box::new(ranges);
 
@@ -151,16 +151,16 @@ pub fn pnsv_matrix_simd(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwn
     // log_4(count / 200) == log_4(count) - log_4(200)
     let matrix_upper_bound = log_4 - TARGET_LENGTH_LOG_4_FLOOR; 
 
-    log::info!("[pnsv] creating matrix...");
+    log::info!("[pnsv_matrix_simd] creating matrix...");
     // let matrix = PnsvMatrix::from_iterator(iterator.clone(), count, ranges_upper_bound + 1, matrix_upper_bound);
     let matrix = PnsvMatrixSux::from_iterator(iterator.clone(), count, ranges_upper_bound + 1, matrix_upper_bound);
     let matrix_box = Box::new(matrix);
 
-    log::info!("[pnsv] creating lcs simd...");
+    log::info!("[pnsv_matrix_simd] creating lcs simd...");
     let lcs_simd = LcsSimd::from_iterator(iterator, count);
     let lcs_simd_box = Box::new(lcs_simd);
 
-    log::info!("[pnsv] target length ranges: 1:{}:{}:..", ranges_upper_bound, matrix_upper_bound);
+    log::info!("[pnsv_matrix_simd] target length ranges: 1:{}:{}:..", ranges_upper_bound, matrix_upper_bound);
 
     PnsvDynOwned {
         structures: vec![ranges_box, matrix_box, lcs_simd_box],
@@ -170,7 +170,7 @@ pub fn pnsv_matrix_simd(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwn
 pub fn pnsv_abs_simd(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwned {
     let count = lcs.len();
 
-    log::info!("[pnsv] creating ranges...");
+    log::info!("[pnsv_abs_simd] creating ranges...");
     const RANGES_UPPER_BOUND: usize = 7;
     let ranges = Ranges::new(extend, count, RANGES_UPPER_BOUND);
     let ranges_box = Box::new(ranges);
@@ -182,10 +182,10 @@ pub fn pnsv_abs_simd(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwned 
     // log_4(count / 200) == log_4(count) - log_4(200)
     let matrix_upper_bound = log_4 - TARGET_LENGTH_LOG_4_FLOOR; 
     
-    log::info!("[pnsv] creating lcs simd...");
+    log::info!("[pnsv_abs_simd] creating lcs simd...");
     let lcs_simd = LcsSimd::from_iterator(iterator.clone(), count);
 
-    log::info!("[pnsv] creating augmented bounded scan...");
+    log::info!("[pnsv_abs_simd] creating augmented bounded scan...");
     let abs = ABS::from_iterator(lcs_simd, iterator, 8, RANGES_UPPER_BOUND + 1, matrix_upper_bound);
     let abs_box = Box::new(abs);
 
