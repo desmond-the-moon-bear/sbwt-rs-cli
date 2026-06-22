@@ -310,7 +310,7 @@ impl Pnsv for PnsvTuned {
         }
 
         if target_length <= self.matrix.max_target() - self.fallback_scan_overlap {
-            return self.ranges.previous(index, target_length);
+            return self.matrix.previous(index, target_length);
         }
 
         if target_length <= self.matrix.max_target() {
@@ -332,7 +332,7 @@ impl Pnsv for PnsvTuned {
         }
 
         if target_length <= self.matrix.max_target() - self.fallback_scan_overlap {
-            return self.ranges.next(index, target_length);
+            return self.matrix.next(index, target_length);
         }
 
         if target_length <= self.matrix.max_target() {
