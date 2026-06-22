@@ -3,7 +3,7 @@
 #![allow(unused)]
 #![allow(clippy::ptr_arg)]
 
-use crate::{ContractLeft, SbwtIndex};
+use crate::{ContractLeft, ExtendRight, SbwtIndex};
 use crate::subsetseq::SubsetSeq;
 use pnsv::Pnsv;
 
@@ -129,10 +129,20 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv> VoDbg<'a, SS, P> {
         }
     }
 
-    // pub fn extend_right(&self, node: Node, character: u8) -> Option<Node> {
-    //     assert!(node.k < self.sbwt.k());
-    //     todo!()
-    // }
+    pub fn extend_right(&self, node: Node, character: u8) -> Option<Node> {
+        // assert!(node.k < self.sbwt.k());
+        let result = self.sbwt.extend_right(node.start..node.end, character);
+        let length_increase = if node.k < self.sbwt.k() { 1 } else { 0 };
+        if result.is_empty() {
+            None
+        } else {
+            Some(Node {
+                start: result.start,
+                end: result.end,
+                k: node.k + length_increase,
+            })
+        }
+    }
 
     // note(mk): idea - use Pnsv trait to find the next and previous value...
     // pub fn extend_left(&self, node: Node, character: u8) -> Option<Node> {

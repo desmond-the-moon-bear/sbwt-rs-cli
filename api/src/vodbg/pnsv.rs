@@ -249,6 +249,36 @@ pub fn pnsv_abs_simd(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwned 
     }
 }
 
+
+const MAX_RANGE_LENGTH_FOR_SIMD: usize = 512;
+pub fn average_range_lengths(lcs: &LcsArray, k: usize) -> Vec<usize> {
+    let count = lcs.len();
+    let mut range_counts = vec![1_usize; k];
+
+    let ten_percent = count / 10;
+    let mut border = ten_percent;
+    let mut percent_count = 0;
+
+    log::info!("[analyse_ranges] counting...");
+    for i in 1..lcs.len() {
+        let item = lcs.access(i);
+        #[allow(clippy::needless_range_loop)]
+        for target_length in 1..k {
+            if item < target_length {
+                range_counts[target_length] += 1;
+            }
+        }
+        if i > border {
+            percent_count += 1;
+            border += ten_percent;
+            log::info!("[analyse_ranges] scanning... {}0%", percent_count);
+        }
+    }
+
+    let count_f64 = count as f64;
+    range_counts.into_iter().map(|border_count| (count_f64 / border_count as f64) as usize).collect()
+}
+
 pub struct PnsvTuned {
     pub ranges: Ranges,
     pub matrix: PnsvMatrixSux,
@@ -258,7 +288,7 @@ pub struct PnsvTuned {
 }
 
 impl PnsvTuned {
-    pub const DEFAULT_SCAN_BOUND: usize = 4;
+    pub const DEFAULT_SCAN_BOUND: usize = 16;
     pub const DEFAULT_FALLBACK_OVERLAP: usize = 2;
 
     pub fn new_with_default_values(extend: &impl ExtendRight, lcs: &LcsArray) -> Self {
@@ -278,18 +308,33 @@ impl PnsvTuned {
         ranges_upper_bound = ranges_upper_bound.min(Ranges::MAX_K);
         let ranges = Ranges::new(extend, count, ranges_upper_bound);
 
-        let iterator = (0..count).map(|index| lcs.access(index) as u8);
-
         let log_4 = (usize::BITS - count.leading_zeros()).div_ceil(2) as usize;
         let mut matrix_upper_bound = log_4 - TARGET_LENGTH_LOG_4_FLOOR; 
         matrix_upper_bound = matrix_upper_bound.min(ranges_upper_bound + 1 + matrix::MAX_ROWS);
+        
+        let mut matrix_option = None;
+        let mut lcs_simd_option = None;
 
-        log::info!("[PnsvTuned::new] creating matrix...");
-        let matrix = PnsvMatrixSux::from_iterator(iterator.clone(), count, ranges_upper_bound + 1, matrix_upper_bound);
-        assert!(matrix.max_target() >= fallback_scan_overlap, "Make sure the fallback scan overlap has a reasonably small value (i.e. most 5).");
+        let matrix_iterator = (0..count).map(|index| lcs.access(index) as u8);
+        let lcs_simd_iterator = (0..count).map(|index| lcs.access(index) as u8);
 
-        log::info!("[PnsvTuned::new] creating lcs simd...");
-        let lcs_simd = LcsSimd::from_iterator(iterator, count);
+        let thread_pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+        thread_pool.scope(|s| {
+            s.spawn(|_| {
+                log::info!("[PnsvTuned::new] creating matrix...");
+                let matrix = PnsvMatrixSux::from_iterator(matrix_iterator, count, ranges_upper_bound + 1, matrix_upper_bound);
+                assert!(matrix.max_target() >= fallback_scan_overlap, "Make sure the fallback scan overlap has a reasonably small value (i.e. most 5).");
+                matrix_option = Some(matrix);
+            });
+            s.spawn(|_| {
+                log::info!("[PnsvTuned::new] creating lcs simd...");
+                let lcs_simd = LcsSimd::from_iterator(lcs_simd_iterator, count);
+                lcs_simd_option = Some(lcs_simd);
+            });
+        });
+
+        let matrix = matrix_option.expect("Creating a matrix should not fail.");
+        let lcs_simd = lcs_simd_option.expect("Creating lcs simd should not fail.");
 
         log::info!("[PnsvTuned::new] target length ranges: 1:{}:{}:..", ranges_upper_bound, matrix_upper_bound);
 
