@@ -12,7 +12,7 @@ pub mod pnsv;
 pub mod benchmark;
 
 #[derive(Clone, Debug)]
-pub struct VoDbg<'a, SS: SubsetSeq + Send + Sync, P: Pnsv> {
+pub struct VoDbg<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> {
     sbwt: &'a SbwtIndex<SS>,
     pnsv: &'a P,
     dummy_marks: bitvec::vec::BitVec,
@@ -25,8 +25,8 @@ pub struct Node {
     pub k: usize,
 }
 
-impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv> VoDbg<'a, SS, P> {
-    // Code adapted from Dbg.
+impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> VoDbg<'a, SS, P> {
+    // Some code adapted from Dbg.
     
     // An internal function for marking the dummy nodes in the SBWT.
     fn mark_dummies(sbwt: &SbwtIndex<SS>) -> bitvec::vec::BitVec {
@@ -118,43 +118,66 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv> VoDbg<'a, SS, P> {
         })
     }
 
-    /// Climb to a "lower" level of the graph where the strings in the nodes are one shorter.
-    pub fn contract_left(&self, node: Node) -> Node {
-        assert!(node.k > 0);
-        let range = self.pnsv.contract_left(node.start..node.end, node.k - 1);
+    /// Climb to a "lower" level of the graph where the strings in the nodes are shorter by
+    /// removing characters from the left.
+    pub fn contract_left(&self, node: Node, target_length: usize) -> Node {
+        assert!(node.k > target_length);
+        let range = self.pnsv.contract_left(node.start..node.end, target_length);
         Node {
             start: range.start,
             end: range.end,
-            k: node.k - 1,
+            k: target_length,
         }
     }
 
-    pub fn extend_right(&self, node: Node, character: u8) -> Option<Node> {
-        // assert!(node.k < self.sbwt.k());
-        let result = self.sbwt.extend_right(node.start..node.end, character);
-        let length_increase = if node.k < self.sbwt.k() { 1 } else { 0 };
-        if result.is_empty() {
-            None
-        } else {
-            Some(Node {
-                start: result.start,
-                end: result.end,
-                k: node.k + length_increase,
-            })
+    /// Climb to a "lower" level of the graph where the strings in the nodes are shorter by
+    /// removing characters from the right.
+    pub fn contract_right(&self, node: Node, target_length: usize) -> Option<Node> {
+        assert!(node.k > target_length);
+        let representative = self.get_representative(node);
+        let mut current_length = node.k;
+        let mut start = representative;
+        while current_length > target_length {
+            start = self.sbwt.inverse_lf_step(start)?;
+            current_length -= 1;
         }
+        let end = self.pnsv.next(start, target_length);
+        let node = Node {
+            start,
+            end,
+            k: target_length,
+        };
+        Some(node)
     }
 
-    // note(mk): idea - use Pnsv trait to find the next and previous value...
+    // note(mk): idea - use Pnsv trait to find the subdivisions of this node's range...
     // pub fn extend_left(&self, node: Node, character: u8) -> Option<Node> {
     //     assert!(node.k < self.sbwt.k());
     //     todo!()
     // }
 
+    /// Climb to an "upper" level of the graph where the strings in the nodes are one longer.
+    pub fn extend_right(&self, node: Node, character: u8) -> Option<Node> {
+        // assert!(node.k < self.sbwt.k());
+        let result = self.sbwt.extend_right(node.start..node.end, character);
+        let length_increase = if node.k < self.sbwt.k() { 1 } else { 0 };
+        if result.is_empty() {
+            return None;
+        }
+        let node = Node {
+            start: result.start,
+            end: result.end,
+            k: node.k + length_increase,
+        };
+        Some(node)
+    }
+
     // Returns the number of outgoing edges from the given node.
     pub fn outdegree(&self, node: Node) -> usize {
         // assert!(!self.dummy_marks[node.id]);
         // self.sbwt.sbwt.subset_size(self.get_suffix_group_start(node.id))
-        todo!()
+        let representative = self.get_representative(node);
+        self.sbwt.sbwt.subset_size(representative)
     }
 
     // Returns the number of incoming edges to the given node.
@@ -168,33 +191,81 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv> VoDbg<'a, SS, P> {
         //     },
         //     None => 0,
         // }
-        todo!()
+
+        // The overall idea is to count the number of ranges for suffixes of length node.k in the
+        // range of the suffix which is equal to the (node.k-1) prefix of the node's k-mer.
+        let in_neighbours_whole_range = self.contract_right(node, node.k - 1);
+        let (mut in_neighbour_start, end) = if let Some(node) = in_neighbours_whole_range {
+            (node.start + 1, node.end)
+        } else {
+            return 0;
+        };
+        let mut count = 1;
+        let target_length = node.k;
+        loop {
+            in_neighbour_start = self.pnsv.next(in_neighbour_start + 1, target_length);
+            if in_neighbour_start >= end {
+                break;
+            }
+            count += 1;
+        }
+        count
     }
     
-    // Returns the colex rank of the smallest k-mer (possibly dummy)
-    // that has the same suffix of length (k-1) as the given colex position (possibly dummy)
-    fn get_suffix_group_start(&self, mut colex: usize) -> usize {
+    // Returns the colex rank of the smallest k-mer (possibly dummy) that has the same suffix of
+    // length (k-1) as the given colex position (possibly dummy).
+    fn get_suffix_group_start(&self, colex: usize) -> usize {
         // while !self.k_minus_1_marks[colex] { // index 0 is always marked so we're good
         //     colex -= 1;
         // }
         // colex
-        todo!()
+        self.pnsv.previous(colex, self.sbwt.k() - 1)
+    }
+
+    /// The k-mers in the SBWT which are colexicographically the smallest with a given (k-1) suffix
+    /// will be referred to as "representatives" i.e. those k-mers in the SBWT which (should) have
+    /// a non-empty set of outgoing edges (where the value k in (k-1) is equal to the k of the
+    /// SBWT). This method returns the reprsentative for the k-mer in the SBWT at the start of the
+    /// range of the given node.
+    pub fn get_representative(&self, node: Node) -> usize {
+        // For reference I will refer to nodes and k-mers whose length is equal to the k-mers
+        // in the SBWT as "maximal" and shorter k-mers and their corresponding nodes as "non-maximal".
+        //
+        // If the node is non-maximal, then the start of its range is guaranteed to be a
+        // representative k-mer. This is because if the start of the range is not the first element
+        // with a given (k-1) suffix, then there exists a k-mer immediately before it (in the
+        // colexicographic order) with the same (k-1) suffix. This means that this previous k-mer
+        // shares any suffix with length less than or equal to (k-1) with the k-mer at the start of
+        // the range which means that the range is not correct. Assuming that every node has a
+        // correct range, this is a contradiction.
+        //
+        // If, however, the node is maximal, then its range contains only 1 k-mer which is not
+        // guaranteed to be a representative and thus we must find that representative.
+        if node.k == self.sbwt.k() {
+            self.get_suffix_group_start(node.start)
+        } else {
+            node.start
+        }
     }
 
     // For each outgoing edge from the given node, pushes to the output vector a pair
     // (v, c), where v is the target node and c is the edge label.
     pub fn push_out_neighbors(&self, node: Node, output: &mut Vec<(Node, u8)>) {
         // assert!(!self.dummy_marks[node.id]);
-        //
         // let rep = self.get_suffix_group_start(node.id);
-        //
         // for (i, &c) in self.sbwt.alphabet().iter().enumerate() {
         //     if self.sbwt.sbwt.set_contains(rep, i as u8) {
         //         let outnode = Node{id: self.sbwt.lf_step(rep, i)};
         //         output.push((outnode, c));
         //     }
         // }
-        todo!()
+        let representative = self.get_representative(node);
+        for (i, &c) in self.sbwt.alphabet().iter().enumerate() {
+            if self.sbwt.sbwt.set_contains(representative, i as u8) {
+                let outnode = self.follow_outedge(node, c).expect("The given outnode should exist.");
+                output.push((outnode, c));
+            }
+        }
     }
 
     // For each incoming edge to the given node, pushes to the output vector a pair
@@ -211,34 +282,55 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv> VoDbg<'a, SS, P> {
         //         output.push((Node{id: i}, inlabel));
         //     });
         // }
-        todo!()
+
+        // The overall idea is similar to the indegree method i.e. to subdivide the range of the
+        // suffix which is equal to the (node.k-1) prefix of the node's k-mer into ranges for nodes
+        // of length (node.k).
+        let inlabel = self.get_last_character(node);
+        let in_neighbours_whole_range = self.contract_right(node, node.k - 1);
+        let (mut in_neighbour_start, end) = if let Some(node) = in_neighbours_whole_range {
+            (node.start, node.end)
+        } else {
+            return;
+        };
+        let target_length = node.k;
+        loop {
+            let in_neighbour_end = self.pnsv.next(in_neighbour_start + 1, target_length);
+            let innode = Node {
+                start: in_neighbour_start,
+                end: in_neighbour_end,
+                k: target_length,
+            };
+            output.push((innode, inlabel));
+            if in_neighbour_end >= end {
+                break;
+            }
+            in_neighbour_start = in_neighbour_end;
+        }
     }
 
     // Gets the last character of the k-mer string of the given node.
     pub fn get_last_character(&self, node: Node) -> u8 {
-        // assert!(!self.dummy_marks[node.id]);
-        // self.sbwt.inlabel(node.id).unwrap() // Can unwrap because this is not a dummy node
-        todo!()
+        assert!(!self.dummy_marks[node.start]);
+        self.sbwt.inlabel(node.start).unwrap() // Can unwrap because this is not a dummy node
     }
 
     // Returns whether the given node has an outgoing edge labeled with `edge_label`.
     pub fn has_outlabel(&self, node: Node, edge_label: u8) -> bool {
         // assert!(!self.dummy_marks[node.id]);
-        // let rep = self.get_suffix_group_start(node.id);
-        // let c_idx = self.sbwt.char_idx(edge_label) as u8;
-        // self.sbwt.sbwt.set_contains(rep, c_idx)
-        todo!()
+        let representative = self.get_representative(node);
+        let c_idx = self.sbwt.char_idx(edge_label) as u8;
+        self.sbwt.sbwt.set_contains(representative, c_idx)
     }
 
     // Pushes the labels of all outgoing edges from the given node to the output vector.
     pub fn push_outlabels(&self, node: Node, output: &mut Vec<u8>) {
         // assert!(!self.dummy_marks[node.id]);
-        // let rep = self.get_suffix_group_start(node.id);
-        // self.sbwt.sbwt.append_set_to_buf(rep, output);
-        // for c in output.iter_mut() { // Map from 0123 to ACGT
-        //     *c = self.sbwt.alphabet()[*c as usize];
-        // }
-        todo!()
+        let representative = self.get_representative(node);
+        self.sbwt.sbwt.append_set_to_buf(representative, output);
+        for c in output.iter_mut() { // Map from 0123 to ACGT
+            *c = self.sbwt.alphabet()[*c as usize];
+        }
     }
 
     // Follows the outgoing edge labeled with edge_label from the given node.
@@ -250,7 +342,9 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv> VoDbg<'a, SS, P> {
         // }
         // let rep = self.get_suffix_group_start(node.id);
         // Some(Node{id: self.sbwt.lf_step(rep, self.sbwt.char_idx(edge_label))})
-        todo!()
+        let extended = self.extend_right(node, edge_label)?;
+        let node = self.contract_left(extended, node.k);
+        Some(node)
     }
 
     // Follows backward the incoming edge that comes from the i-th smallest k-mer
@@ -277,7 +371,31 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv> VoDbg<'a, SS, P> {
         // }
         //
         // None
-        todo!()
+        let in_neighbours_whole_range = self.contract_right(node, node.k - 1);
+        let (mut in_neighbour_start, end) = if let Some(node) = in_neighbours_whole_range {
+            (node.start, node.end)
+        } else {
+            return None;
+        };
+        let target_length = node.k;
+        let mut current_index = 0;
+        loop {
+            let in_neighbour_end = self.pnsv.next(in_neighbour_start + 1, target_length);
+            if current_index == i {
+                let innode = Node {
+                    start: in_neighbour_start,
+                    end: in_neighbour_end,
+                    k: target_length,
+                };
+                return Some(innode);
+            }
+            if in_neighbour_end >= end {
+                break;
+            }
+            current_index += 1;
+            in_neighbour_start = in_neighbour_end;
+        }
+        None
     }
 
     pub fn is_dummy_colex_position(&self, pos: usize) -> bool {

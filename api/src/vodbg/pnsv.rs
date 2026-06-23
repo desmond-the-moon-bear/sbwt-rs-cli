@@ -104,13 +104,7 @@ impl Pnsv for PnsvDynOwned {
 // around 200 i.e. the target length. This value is equal to approx log_4(200).
 const TARGET_LENGTH_LOG_4_FLOOR: usize = 3;
 
-pub fn pnsv_simd_fallback_matrix(extend: &impl ExtendRight, lcs: &LcsArray, scan_bound: usize) -> PnsvDynOwned {
-    let count = lcs.len();
-
-    let mut structures: Vec<Box<dyn Pnsv>> = vec![];
-
-    log::info!("[pnsv_simd_fallback_matrix] creating ranges...");
-
+fn make_ranges(extend: &impl ExtendRight, count: usize) -> Ranges {
     let mut ranges_upper_bound = 0;
     let mut bits_in_current_level_of_ranges = usize::BITS as usize * 4;
     while bits_in_current_level_of_ranges < count {
@@ -118,7 +112,18 @@ pub fn pnsv_simd_fallback_matrix(extend: &impl ExtendRight, lcs: &LcsArray, scan
         bits_in_current_level_of_ranges *= 4;
     }
     ranges_upper_bound = ranges_upper_bound.min(Ranges::MAX_K);
-    let ranges = Ranges::new(extend, count, ranges_upper_bound);
+    Ranges::new(extend, count, ranges_upper_bound)
+}
+
+pub fn pnsv_simd_fallback_matrix(extend: &impl ExtendRight, lcs: &LcsArray, scan_bound: usize) -> PnsvDynOwned {
+    let count = lcs.len();
+
+    let mut structures: Vec<Box<dyn Pnsv>> = vec![];
+
+    log::info!("[pnsv_simd_fallback_matrix] creating ranges...");
+
+    let ranges = make_ranges(extend, count);
+    let ranges_upper_bound = ranges.max_target();
     let ranges_box = Box::new(ranges);
     structures.push(ranges_box);
 
@@ -170,27 +175,13 @@ pub fn pnsv_matrix_simd(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwn
     let mut structures: Vec<Box<dyn Pnsv>> = vec![];
 
     log::info!("[pnsv_matrix_simd] creating ranges...");
-    let mut ranges_upper_bound = 0;
-    let mut bits_in_current_level_of_ranges = usize::BITS as usize * 4;
-    while bits_in_current_level_of_ranges < count {
-        ranges_upper_bound += 1;
-        bits_in_current_level_of_ranges *= 4;
-    }
-    ranges_upper_bound = ranges_upper_bound.min(Ranges::MAX_K);
-    let ranges = Ranges::new(extend, count, ranges_upper_bound);
+    let ranges = make_ranges(extend, count);
+    let ranges_upper_bound = ranges.max_target();
     let ranges_box = Box::new(ranges);
     structures.push(ranges_box);
 
     let iterator = (0..count).map(|index| lcs.access(index) as u8);
-
-    // Experimentally determined, the ranges shrink 4-fold initially and afterwards the ratio
-    // between two consecutive average region lengths (e.g. region lengths for k=7 and k=8) becomes
-    // less than 4. Around that time as well the average range length becomes around 200 i.e. the
-    // target length. Therefore a simple logarithm should find the target length upper bound for
-    // the matrix solution.
     let log_4 = (usize::BITS - count.leading_zeros()).div_ceil(2) as usize;
-
-    // log_4(count / 200) == log_4(count) - log_4(200)
     let mut matrix_upper_bound = log_4 - TARGET_LENGTH_LOG_4_FLOOR; 
     matrix_upper_bound = matrix_upper_bound.min(ranges_upper_bound + 1 + matrix::MAX_ROWS);
 
@@ -208,6 +199,42 @@ pub fn pnsv_matrix_simd(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwn
     structures.push(lcs_simd_box);
 
     log::info!("[pnsv_matrix_simd] target length ranges: 1:{}:{}:..", ranges_upper_bound, matrix_upper_bound);
+
+    PnsvDynOwned {
+        structures,
+    }
+}
+
+pub fn pnsv_wwt_simd(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwned {
+    let count = lcs.len();
+
+    let mut structures: Vec<Box<dyn Pnsv>> = vec![];
+
+    log::info!("[pnsv_wwt_simd] creating ranges...");
+    let ranges = make_ranges(extend, count);
+    let ranges_upper_bound = ranges.max_target();
+    let ranges_box = Box::new(ranges);
+    structures.push(ranges_box);
+
+    let iterator = (0..count).map(|index| lcs.access(index) as u8);
+    let log_4 = (usize::BITS - count.leading_zeros()).div_ceil(2) as usize;
+    let mut wwt_upper_bound = log_4 - TARGET_LENGTH_LOG_4_FLOOR; 
+    // wwt_upper_bound = wwt_upper_bound.min(ranges_upper_bound + 1 + matrix::MAX_ROWS);
+
+    if wwt_upper_bound > ranges_upper_bound {
+        log::info!("[pnsv_wwt_simd] creating windowed wavelet tree...");
+        let window_size = wwt_upper_bound - ranges_upper_bound + 1;
+        let wavelet = WWT::from_iterator(iterator.clone(), ranges_upper_bound, window_size);
+        let wavelet_box = Box::new(wavelet);
+        structures.push(wavelet_box);
+    }
+
+    log::info!("[pnsv_wwt_simd] creating lcs simd...");
+    let lcs_simd = LcsSimd::from_iterator(iterator, count);
+    let lcs_simd_box = Box::new(lcs_simd);
+    structures.push(lcs_simd_box);
+
+    log::info!("[pnsv_wwt_simd] target length ranges: 1:{}:{}:..", ranges_upper_bound, wwt_upper_bound);
 
     PnsvDynOwned {
         structures,
