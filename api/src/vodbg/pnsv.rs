@@ -27,6 +27,7 @@ pub trait Pnsv {
     fn previous(&self, index: usize, target_length: usize) -> usize;
     fn next(&self, index: usize, target_length: usize) -> usize;
     fn override_contract_left(&self) -> bool { false }
+    #[allow(unused_variables)]
     fn overriden_contract_left(&self, I: std::ops::Range<usize>, target_len: usize) -> std::ops::Range<usize> { 0..0 }
     fn max_target(&self) -> usize { 0 }
 }
@@ -104,7 +105,7 @@ impl Pnsv for PnsvDynOwned {
 // around 200 i.e. the target length. This value is equal to approx log_4(200).
 const TARGET_LENGTH_LOG_4_FLOOR: usize = 3;
 
-fn make_ranges(extend: &impl ExtendRight, count: usize) -> Ranges {
+pub fn make_ranges(extend: &impl ExtendRight, count: usize) -> Ranges {
     let mut ranges_upper_bound = 0;
     let mut bits_in_current_level_of_ranges = usize::BITS as usize * 4;
     while bits_in_current_level_of_ranges < count {
@@ -126,7 +127,7 @@ pub fn pnsv_simd_fallback_matrix(extend: &impl ExtendRight, lcs: &LcsArray, scan
     let ranges_upper_bound = ranges.max_target();
     let ranges_box = Box::new(ranges);
     structures.push(ranges_box);
-
+ 
     let iterator = (0..count).map(|index| lcs.access(index) as u8);
 
     // Experimentally determined, the ranges shrink 4-fold initially and afterwards the ratio
@@ -218,7 +219,7 @@ pub fn pnsv_wwt_simd(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwned 
 
     let iterator = (0..count).map(|index| lcs.access(index) as u8);
     let log_4 = (usize::BITS - count.leading_zeros()).div_ceil(2) as usize;
-    let mut wwt_upper_bound = log_4 - TARGET_LENGTH_LOG_4_FLOOR; 
+    let wwt_upper_bound = log_4 - TARGET_LENGTH_LOG_4_FLOOR; 
     // wwt_upper_bound = wwt_upper_bound.min(ranges_upper_bound + 1 + matrix::MAX_ROWS);
 
     if wwt_upper_bound > ranges_upper_bound {
@@ -276,8 +277,7 @@ pub fn pnsv_abs_simd(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwned 
     }
 }
 
-
-const MAX_RANGE_LENGTH_FOR_SIMD: usize = 512;
+// const MAX_RANGE_LENGTH_FOR_SIMD: usize = 512;
 pub fn average_range_lengths(lcs: &LcsArray, k: usize) -> Vec<usize> {
     let count = lcs.len();
     let mut range_counts = vec![1_usize; k];
