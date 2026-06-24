@@ -82,11 +82,11 @@ impl Ranges {
             // length. Otherwise we want the previous element.
             match result {
                 Ok(_) => { return index; }
-                Err(found_index) => {
-                    if found_index == 0 {
+                Err(insertion_index) => {
+                    if insertion_index == 0 {
                         return 0;
                     }
-                    return self.levels[target_length][found_index - 1];
+                    return self.levels[target_length][insertion_index - 1];
                 }
             }
         }
