@@ -271,16 +271,13 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> VoDbg<'a, SS, P> {
     /// Returns the number of outgoing edges from the given node.
     pub fn outdegree(&self, node: Node) -> usize {
         assert!(node.k < self.sbwt.k() || !self.is_dummy(node.start));
-        if node.k == self.sbwt.k() {
-            let representative = self.get_representative_of_maximal_node(node);
-            return self.sbwt.sbwt.subset_size(representative);
-        }
+        // note(mk): We have to do a contract left and an extend right to find whether the given
+        // neighbour exists (node centric de Bruijn graph). This is a costly operation. This note
+        // is also valid for every other location where information about the out neighbours is
+        // needed.
         let mut outdegree = 0;
-        for character_index in 0..self.sbwt.alphabet().len() {
-            let after  = self.sbwt.sbwt.rank(character_index as u8, node.end);
-            let before = self.sbwt.sbwt.rank(character_index as u8, node.start);
-            let sets_containing_character_in_range = after - before;
-            if sets_containing_character_in_range != 0 {
+        for &c in self.sbwt.alphabet() {
+            if self.follow_outedge(node, c).is_some() {
                 outdegree += 1;
             }
         }
@@ -375,23 +372,9 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> VoDbg<'a, SS, P> {
     /// label.
     pub fn push_out_neighbors(&self, node: Node, output: &mut Vec<(Node, u8)>) {
         assert!(node.k < self.sbwt.k() || !self.is_dummy(node.start));
-        if node.k == self.sbwt.k() {
-            let representative = self.get_representative_of_maximal_node(node);
-            for (index, &c) in self.sbwt.alphabet().iter().enumerate() {
-                if self.sbwt.sbwt.set_contains(representative, index as u8) {
-                    let outnode = self.follow_outedge(node, c).expect("The given outnode should exist.");
-                    output.push((outnode, c));
-                }
-            }
-            return;
-        }
-        for (index, &c) in self.sbwt.alphabet().iter().enumerate() {
-            let after  = self.sbwt.sbwt.rank(index as u8, node.end);
-            let before = self.sbwt.sbwt.rank(index as u8, node.start);
-            let sets_containing_character_in_range = after - before;
-            if sets_containing_character_in_range != 0 {
-                let node = self.follow_outedge(node, c).expect("The given outnode should exist.");
-                output.push((node, c));
+        for &c in self.sbwt.alphabet() {
+            if let Some(neighbor) = self.follow_outedge(node, c) {
+                output.push((neighbor, c));
             }
         }
     }
@@ -444,37 +427,16 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> VoDbg<'a, SS, P> {
     /// order de Bruijn graph.
     pub fn has_outlabel(&self, node: Node, edge_label: u8) -> bool {
         assert!(node.k < self.sbwt.k() || !self.is_dummy(node.start));
-        if node.k == self.sbwt.k() {
-            let representative = self.get_representative_of_maximal_node(node);
-            return self.sbwt.sbwt.set_contains(representative, edge_label);
-        }
-        let character_index = self.sbwt.char_idx(edge_label) as u8;
-        let after  = self.sbwt.sbwt.rank(character_index, node.end);
-        let before = self.sbwt.sbwt.rank(character_index, node.start);
-        let sets_containing_character_in_range = after - before;
-        sets_containing_character_in_range != 0
+        self.follow_outedge(node, edge_label).is_some()
     }
 
     /// Pushes the labels of all outgoing edges in the same order de Bruijn graph from the given
     /// node to the output vector.
     pub fn push_outlabels(&self, node: Node, output: &mut Vec<u8>) {
         assert!(node.k < self.sbwt.k() || !self.is_dummy(node.start));
-        if node.k == self.sbwt.k() {
-            let representative = self.get_representative_of_maximal_node(node);
-            for (index, &c) in self.sbwt.alphabet().iter().enumerate() {
-                if self.sbwt.sbwt.set_contains(representative, index as u8) {
-                    output.push(c);
-                }
-            }
-            return;
-        }
-        for character_index in 0..self.sbwt.alphabet().len() {
-            let after  = self.sbwt.sbwt.rank(character_index as u8, node.end);
-            let before = self.sbwt.sbwt.rank(character_index as u8, node.start);
-            let sets_containing_character_in_range = after - before;
-            if sets_containing_character_in_range != 0 {
-                let character = self.sbwt.alphabet()[character_index];
-                output.push(character);
+        for &c in self.sbwt.alphabet() {
+            if self.follow_outedge(node, c).is_some() {
+                output.push(c);
             }
         }
     }
@@ -590,11 +552,10 @@ mod tests {
             graphs.push(dbg);
         }
 
-        let pnsv_tuned = PnsvTuned::new_with_default_values(
-            &sbwt_indices[k - MIN_K].0,
-            sbwt_indices[k - MIN_K].1.as_ref().unwrap()
-        );
-        let vodbg = VoDbg::new(&sbwt_indices[k - MIN_K].0, &pnsv_tuned);
+        let vodbg_sbwt = &sbwt_indices[k - MIN_K].0;
+        let vodbg_lcs = sbwt_indices[k - MIN_K].1.as_ref().unwrap();
+        let pnsv_tuned = PnsvTuned::new_with_default_values(vodbg_sbwt, vodbg_lcs);
+        let vodbg = VoDbg::new(vodbg_sbwt, &pnsv_tuned);
 
         let alphabet = sbwt_indices[k - MIN_K].0.alphabet();
 
@@ -614,14 +575,14 @@ mod tests {
                     // get_node
                     let dbg_node = dbg.get_node(sequence).expect("Should exist.");
                     let vodbg_node = vodbg.get_node(sequence).expect("Should exist.");
-                    
+ 
                     // get_kmer
                     assert_eq!(dbg.get_kmer(dbg_node), sequence);
                     assert_eq!(vodbg.get_kmer(vodbg_node), sequence);
 
                     // indegree, outdegree
                     assert_eq!(dbg.indegree(dbg_node), vodbg.indegree(vodbg_node));
-                    assert_eq!(dbg.outdegree(dbg_node), vodbg.outdegree(vodbg_node), "k: {}", current_k);
+                    assert_eq!(dbg.outdegree(dbg_node), vodbg.outdegree(vodbg_node));
 
                     // push_in_neighbors
                     dbg_buffer.clear();
@@ -650,7 +611,7 @@ mod tests {
                         let vodbg_out_neighbor = vodbg_buffer[i].0;
                         assert_eq!(dbg.get_kmer(dbg_out_neighbor), vodbg.get_kmer(vodbg_out_neighbor));
                     }
-                    
+
                     // get_last_character
                     assert_eq!(dbg.get_last_character(dbg_node), vodbg.get_last_character(vodbg_node));
 
