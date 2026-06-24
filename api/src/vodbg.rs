@@ -577,12 +577,25 @@ mod tests {
         );
         let vodbg = VoDbg::new(&sbwt_indices[k - MIN_K].0, &pnsv_tuned);
 
-        todo!("Finish this...");
-
         // List of methods to test...
-        // push_node_kmer
-        // get_kmer
-        // get_node
+
+        // push_node_kmer, get_kmer, get_node
+        log::info!("Testing get_kmer and get_node...");
+        for current_k in MIN_K..=k {
+            let dbg_index = current_k - MIN_K;
+            let dbg = &graphs[dbg_index];
+            for sequence_index in 0..seqs.len() {
+                for sequence_start in 0..k-current_k {
+                    let sequence = &seqs[sequence_index][sequence_start..sequence_start + current_k];
+                    let dbg_node = dbg.get_node(sequence).expect("Should exist.");
+                    let vodbg_node = vodbg.get_node(sequence).expect("Should exist.");
+                    assert_eq!(dbg.get_kmer(dbg_node), sequence);
+                    assert_eq!(vodbg.get_kmer(vodbg_node), sequence);
+                }
+            }
+        }
+
+        // log::info!("Testing get_kmer and get_node...");
         // contract_left
         // contract_right
         // extend_left_with_index
