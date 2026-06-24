@@ -186,7 +186,10 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> VoDbg<'a, SS, P> {
             start = self.sbwt.inverse_lf_step(start)?;
             current_length -= 1;
         }
-        let end = self.pnsv.next(start, target_length);
+        // println!("start: {}; tl: {}", start, target_length);
+        let end = self.pnsv.next(start + 1, target_length);
+        // println!("end: {}", end);
+        // panic!();
         let node = new_node(start, end, target_length);
         Some(node)
     }
@@ -327,7 +330,7 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> VoDbg<'a, SS, P> {
         let target_length = node.k;
         while in_neighbour_start < end {
             count += 1;
-            in_neighbour_start = self.pnsv.next(in_neighbour_start, target_length);
+            in_neighbour_start = self.pnsv.next(in_neighbour_start + 1, target_length);
         }
 
         count
@@ -406,6 +409,14 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> VoDbg<'a, SS, P> {
         } else {
             return;
         };
+
+        if self.is_dummy(in_neighbour_start) {
+            let length = self.get_dummy_length(in_neighbour_start);
+            if length < node.k {
+                in_neighbour_start += 1;
+            }
+        }
+
         let target_length = node.k;
         loop {
             let in_neighbour_end = self.pnsv.next(in_neighbour_start + 1, target_length);
@@ -474,7 +485,7 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> VoDbg<'a, SS, P> {
         assert!(node.k < self.sbwt.k() || !self.is_dummy(node.start));
         // The SBWT is based on a node-centric de Bruijn graph and thus it is not guaranteed that
         // for each two nodes there is a corresponding (k+1)-mer.
-        let contracted = self.contract_left(node, node.k);
+        let contracted = self.contract_left(node, node.k - 1);
         self.extend_right(contracted, edge_label)
     }
 
@@ -489,6 +500,14 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> VoDbg<'a, SS, P> {
         } else {
             return None;
         };
+
+        if self.is_dummy(in_neighbour_start) {
+            let length = self.get_dummy_length(in_neighbour_start);
+            if length < node.k {
+                in_neighbour_start += 1;
+            }
+        }
+
         let target_length = node.k;
         let mut current_index = 0;
         loop {
@@ -577,37 +596,85 @@ mod tests {
         );
         let vodbg = VoDbg::new(&sbwt_indices[k - MIN_K].0, &pnsv_tuned);
 
-        // List of methods to test...
+        let alphabet = sbwt_indices[k - MIN_K].0.alphabet();
 
-        // push_node_kmer, get_kmer, get_node
-        log::info!("Testing get_kmer and get_node...");
+        let mut dbg_buffer = vec![];
+        let mut vodbg_buffer = vec![];
+
+        let mut dbg_outlabels = vec![];
+        let mut vodbg_outlabels = vec![];
+
         for current_k in MIN_K..=k {
             let dbg_index = current_k - MIN_K;
             let dbg = &graphs[dbg_index];
             for sequence_index in 0..seqs.len() {
                 for sequence_start in 0..k-current_k {
                     let sequence = &seqs[sequence_index][sequence_start..sequence_start + current_k];
+
+                    // get_node
                     let dbg_node = dbg.get_node(sequence).expect("Should exist.");
                     let vodbg_node = vodbg.get_node(sequence).expect("Should exist.");
+                    
+                    // get_kmer
                     assert_eq!(dbg.get_kmer(dbg_node), sequence);
                     assert_eq!(vodbg.get_kmer(vodbg_node), sequence);
+
+                    // indegree, outdegree
+                    assert_eq!(dbg.indegree(dbg_node), vodbg.indegree(vodbg_node));
+                    assert_eq!(dbg.outdegree(dbg_node), vodbg.outdegree(vodbg_node), "k: {}", current_k);
+
+                    // push_in_neighbors
+                    dbg_buffer.clear();
+                    dbg.push_in_neighbors(dbg_node, &mut dbg_buffer);
+                    vodbg_buffer.clear();
+                    vodbg.push_in_neighbors(vodbg_node, &mut vodbg_buffer);
+
+                    assert_eq!(dbg_buffer.len(), vodbg_buffer.len());
+                    for i in 0..dbg_buffer.len() {
+                        assert_eq!(dbg_buffer[i].1, vodbg_buffer[i].1);
+                        let dbg_in_neighbor = dbg_buffer[i].0;
+                        let vodbg_in_neighbor = vodbg_buffer[i].0;
+                        assert_eq!(dbg.get_kmer(dbg_in_neighbor), vodbg.get_kmer(vodbg_in_neighbor));
+                    }
+
+                    // push_out_neighbors
+                    dbg_buffer.clear();
+                    dbg.push_out_neighbors(dbg_node, &mut dbg_buffer);
+                    vodbg_buffer.clear();
+                    vodbg.push_out_neighbors(vodbg_node, &mut vodbg_buffer);
+
+                    assert_eq!(dbg_buffer.len(), vodbg_buffer.len());
+                    for i in 0..dbg_buffer.len() {
+                        assert_eq!(dbg_buffer[i].1, vodbg_buffer[i].1);
+                        let dbg_out_neighbor = dbg_buffer[i].0;
+                        let vodbg_out_neighbor = vodbg_buffer[i].0;
+                        assert_eq!(dbg.get_kmer(dbg_out_neighbor), vodbg.get_kmer(vodbg_out_neighbor));
+                    }
+                    
+                    // get_last_character
+                    assert_eq!(dbg.get_last_character(dbg_node), vodbg.get_last_character(vodbg_node));
+
+                    // has_outlabel
+                    for &c in alphabet {
+                        assert_eq!(dbg.has_outlabel(dbg_node, c), vodbg.has_outlabel(vodbg_node, c));
+                    }
+
+                    // push_outlabels
+                    dbg_outlabels.clear();
+                    dbg.push_outlabels(dbg_node, &mut dbg_outlabels);
+                    vodbg_outlabels.clear();
+                    vodbg.push_outlabels(vodbg_node, &mut vodbg_outlabels);
+                    assert_eq!(dbg_outlabels, vodbg_outlabels);
                 }
             }
         }
 
-        // log::info!("Testing get_kmer and get_node...");
         // contract_left
         // contract_right
         // extend_left_with_index
         // extend_left_with_character
         // extend_right
-        // outdegree
-        // indegree
-        // push_out_neighbors
-        // push_in_neighbors
-        // get_last_character
-        // has_outlabel
-        // push_outlabels
+        //
         // follow_outedge
         // follow_inedge
     }

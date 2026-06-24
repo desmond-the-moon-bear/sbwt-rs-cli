@@ -108,9 +108,11 @@ const TARGET_LENGTH_LOG_4_FLOOR: usize = 3;
 pub fn make_ranges(extend: &impl ExtendRight, count: usize) -> Ranges {
     let mut ranges_upper_bound = 0;
     let mut bits_in_current_level_of_ranges = usize::BITS as usize * 4;
-    while bits_in_current_level_of_ranges < count {
+    let mut total_bits = bits_in_current_level_of_ranges;
+    while total_bits < count {
         ranges_upper_bound += 1;
         bits_in_current_level_of_ranges *= 4;
+        total_bits += bits_in_current_level_of_ranges;
     }
     ranges_upper_bound = ranges_upper_bound.min(Ranges::MAX_K);
     Ranges::new(extend, count, ranges_upper_bound)
@@ -424,4 +426,5 @@ impl Pnsv for PnsvTuned {
 #[cfg(test)]
 mod tests {
     // todo(mk): test ScanWithFallback...
+    // todo(mk): test Ranges...
 }

@@ -14,7 +14,7 @@ pub struct Ranges {
 }
 
 impl Ranges {
-    pub const MAX_K: usize = 9;
+    pub const MAX_K: usize = 8;
 
     pub fn new<E: ExtendRight>(index: &E, n: usize, max_k: usize) -> Self {
         let max_k = if max_k > Self::MAX_K {
@@ -32,9 +32,7 @@ impl Ranges {
         let mut next_level: Vec<std::ops::Range<usize>> = vec![];
 
         let mut buffer = vec![];
-        for _ in 0..max_k {
-            buffer = vec![];
-
+        for i in 0..=max_k {
             for range in &current_level {
                 if range.start != 0 {
                     // The other procedures will assume there is an imaginary 0 at the beginning of
@@ -54,11 +52,16 @@ impl Ranges {
 
             // This sort should not take that much time given max_k is not very big.
             buffer.sort();
-            levels.push(buffer);
+            if i == max_k {
+                break;
+            }
+            levels.push(buffer.clone());
 
             std::mem::swap(&mut current_level, &mut next_level);
             next_level.clear();
         }
+
+        levels.push(buffer);
 
         Self {
             levels,
@@ -71,31 +74,25 @@ impl Ranges {
     /// Given an index and a target value finds the index of the previous element in the LCS array
     /// which has value smaller than the target one. This is equivalent to finding a the maximum
     /// border index which is smaller than target_len in the corresponding level.
-    pub fn previous(&self, index: usize, target_len: usize) -> usize {
-        let mut answer = 0;
-        // To be consistent with the ContractLeft semantics this method accepts a target value for
-        // which to expand the interval. However, we want to expand the range to a level (i.e.
-        // value of k) which is smaller than it.
-        let level_to_search = target_len - 1;
-
-        if self.levels[level_to_search].len() >= Self::SCAN_UPPER_BOUND {
-            let result = self.levels[level_to_search].binary_search(&index);
-            // If the value is found we want the previous element (if it exists, otherwise 0). If
-            // the value is not found, then the value at the found index is greater than the
-            // parameter index and the previous value is smaller. We want the previous value either
-            // way.
-            let found_index = match result {
-                Ok(value) => value,
-                Err(value) => value,
-            };
-            if found_index == 0 {
-                return 0;
+    pub fn previous(&self, index: usize, target_length: usize) -> usize {
+        assert!(target_length < self.levels.len());
+        if self.levels[target_length].len() >= Self::SCAN_UPPER_BOUND {
+            let result = self.levels[target_length].binary_search(&index);
+            // If the value is found, then the value under the index is smaller than the target
+            // length. Otherwise we want the previous element.
+            match result {
+                Ok(_) => { return index; }
+                Err(found_index) => {
+                    if found_index == 0 {
+                        return 0;
+                    }
+                    return self.levels[target_length][found_index - 1];
+                }
             }
-            return self.levels[level_to_search][found_index - 1];
         }
-
-        for &item in &self.levels[level_to_search] {
-            if item >= index { break; }
+        let mut answer = 0;
+        for &item in &self.levels[target_length] {
+            if item > index { break; }
             answer = item;
         }
         answer
@@ -103,32 +100,25 @@ impl Ranges {
 
     /// Similar to the find_previous_range method. Expands the upper bound of the range for the
     /// ContractLeft operation.
-    pub fn next(&self, index: usize, target_len: usize) -> usize {
-        let level_to_search = target_len - 1;
-
-        if self.levels[level_to_search].len() >= Self::SCAN_UPPER_BOUND {
-            let result = self.levels[level_to_search].binary_search(&index);
-            // If the value is found we want the next element (if it exists, otherwise n). If
-            // the value is not found, then the value at the found index is greater than the
-            // parameter index so we return that value.
+    pub fn next(&self, index: usize, target_length: usize) -> usize {
+        assert!(target_length < self.levels.len());
+        if self.levels[target_length].len() >= Self::SCAN_UPPER_BOUND {
+            let result = self.levels[target_length].binary_search(&index);
+            // If the value is found, then the value under the index is smaller than the target
+            // length. Otherwise, the slot where the index can be inserted contains the next
+            // smaller value if the found index is in the bounds of the array.
             match result {
-                Ok(matched_index) => {
-                    if matched_index + 1 >= self.levels[level_to_search].len() {
-                        return self.n;
-                    }
-                    return self.levels[level_to_search][matched_index + 1];
-                }
+                Ok(_) => { return index; }
                 Err(insertion_index) => {
-                    if insertion_index >= self.levels[level_to_search].len() {
+                    if insertion_index >= self.levels[target_length].len() {
                         return self.n;
                     }
-                    return self.levels[level_to_search][insertion_index];
+                    return self.levels[target_length][insertion_index];
                 },
             };
         }
-
-        for &item in &self.levels[level_to_search] {
-            if item > index { 
+        for &item in &self.levels[target_length] {
+            if item >= index { 
                 return item;
             }
         }
@@ -148,6 +138,6 @@ impl super::Pnsv for Ranges {
     }
 
     #[inline]
-    fn max_target(&self) -> usize { self.levels.len() }
+    fn max_target(&self) -> usize { self.levels.len() - 1 }
 }
 
