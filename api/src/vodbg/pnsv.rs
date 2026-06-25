@@ -349,12 +349,14 @@ impl PnsvTuned {
 
         let thread_pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
         thread_pool.scope(|s| {
-            s.spawn(|_| {
-                log::info!("[PnsvTuned::new] creating matrix...");
-                let matrix = PnsvMatrixSux::from_iterator(matrix_iterator, count, ranges_upper_bound + 1, matrix_upper_bound);
-                assert!(matrix.max_target() >= fallback_scan_overlap, "Make sure the fallback scan overlap has a reasonably small value (i.e. most 5).");
-                matrix_option = Some(matrix);
-            });
+            if matrix_upper_bound > ranges_upper_bound {
+                s.spawn(|_| {
+                    log::info!("[PnsvTuned::new] creating matrix...");
+                    let matrix = PnsvMatrixSux::from_iterator(matrix_iterator, count, ranges_upper_bound + 1, matrix_upper_bound);
+                    assert!(matrix.max_target() >= fallback_scan_overlap, "Make sure the fallback scan overlap has a reasonably small value (i.e. most 5).");
+                    matrix_option = Some(matrix);
+                });
+            }
             s.spawn(|_| {
                 log::info!("[PnsvTuned::new] creating lcs simd...");
                 let lcs_simd = LcsSimd::from_iterator(lcs_simd_iterator, count);
@@ -362,7 +364,10 @@ impl PnsvTuned {
             });
         });
 
-        let matrix = matrix_option.expect("Creating a matrix should not fail.");
+        let matrix = match matrix_option {
+            Some(value) => value,
+            None => PnsvMatrixSux::empty(),
+        };
         let lcs_simd = lcs_simd_option.expect("Creating lcs simd should not fail.");
 
         log::info!("[PnsvTuned::new] target length ranges: 1:{}:{}:..", ranges_upper_bound, matrix_upper_bound);
@@ -383,18 +388,20 @@ impl Pnsv for PnsvTuned {
             return self.ranges.previous(index, target_length);
         }
 
-        if target_length <= self.matrix.max_target() - self.fallback_scan_overlap {
-            return self.matrix.previous(index, target_length);
-        }
+        if self.matrix.width != 0 {
+            if target_length <= self.matrix.max_target() - self.fallback_scan_overlap {
+                return self.matrix.previous(index, target_length);
+            }
 
-        if target_length <= self.matrix.max_target() {
-            let result = self.lcs_simd.scan_left_bounded(index, target_length as u8, self.scan_bound);
-            return match result {
-                Ok(index) => index,
-                Err(continue_search_index) => {
-                    self.matrix.previous(continue_search_index, target_length)
-                }
-            };
+            if target_length <= self.matrix.max_target() {
+                let result = self.lcs_simd.scan_left_bounded(index, target_length as u8, self.scan_bound);
+                return match result {
+                    Ok(index) => index,
+                    Err(continue_search_index) => {
+                        self.matrix.previous(continue_search_index, target_length)
+                    }
+                };
+            }
         }
 
         self.lcs_simd.scan_left(index, target_length as u8)
@@ -405,18 +412,20 @@ impl Pnsv for PnsvTuned {
             return self.ranges.next(index, target_length);
         }
 
-        if target_length <= self.matrix.max_target() - self.fallback_scan_overlap {
-            return self.matrix.next(index, target_length);
-        }
+        if self.matrix.width != 0 {
+            if target_length <= self.matrix.max_target() - self.fallback_scan_overlap {
+                return self.matrix.next(index, target_length);
+            }
 
-        if target_length <= self.matrix.max_target() {
-            let result = self.lcs_simd.scan_right_bounded(index, target_length as u8, self.scan_bound);
-            return match result {
-                Ok(index) => index,
-                Err(continue_search_index) => {
-                    self.matrix.next(continue_search_index, target_length)
-                }
-            };
+            if target_length <= self.matrix.max_target() {
+                let result = self.lcs_simd.scan_right_bounded(index, target_length as u8, self.scan_bound);
+                return match result {
+                    Ok(index) => index,
+                    Err(continue_search_index) => {
+                        self.matrix.next(continue_search_index, target_length)
+                    }
+                };
+            }
         }
 
         self.lcs_simd.scan_right(index, target_length as u8)

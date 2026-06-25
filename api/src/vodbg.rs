@@ -443,7 +443,7 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> VoDbg<'a, SS, P> {
     /// Follows backward the incoming edge that comes from the i-th smallest k-mer
     /// (i ∈ [0, indegree(node)) in colexicographic order that has an outgoing edge to `node` in the
     /// same order de Bruijn graph. Returns None if i ≥ indegree(node).
-    pub fn follow_inedge(&self, node: Node, i: usize) -> Option<Node>{
+    pub fn follow_inedge(&self, node: Node, index: usize) -> Option<Node>{
         assert!(node.k < self.sbwt.k() || !self.is_dummy(node.start));
         let in_neighbours_whole_range = self.contract_right(node, node.k - 1);
         let (mut in_neighbour_start, end) = if let Some(node) = in_neighbours_whole_range {
@@ -461,9 +461,9 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> VoDbg<'a, SS, P> {
 
         let target_length = node.k;
         let mut current_index = 0;
-        loop {
+        while in_neighbour_start < end {
             let in_neighbour_end = self.pnsv.next(in_neighbour_start + 1, target_length);
-            if current_index == i {
+            if current_index == index {
                 let innode = new_node(in_neighbour_start, in_neighbour_end, target_length);
                 return Some(innode);
             }
@@ -498,7 +498,7 @@ mod tests {
     use pnsv::PnsvTuned;
 
     #[test]
-    fn all() {
+    fn randomised_kmers() {
         use rand_chacha::ChaCha20Rng;
         use rand_chacha::rand_core::SeedableRng;
         use rand_chacha::rand_core::RngCore;
@@ -517,8 +517,6 @@ mod tests {
                 _ => b'T',
             }).collect();
             seqs.push(kmer);
-            // seqs.push(kmer.clone());
-            // seqs_hashset.insert(kmer);
         }
 
         seqs.sort();
@@ -650,6 +648,53 @@ mod tests {
                     assert_eq!(dbg_outlabels, vodbg_outlabels);
                 }
             }
+        }
+
+        const EXTRA_KMERS_LOWER_BOUND_K: usize = 12;
+        const EXTRA_SEQUENCE_COUNT: usize = 512;
+        let mut sequence: Vec<u8> = Vec::with_capacity(k);
+        for current_k in EXTRA_KMERS_LOWER_BOUND_K..=k {
+            let dbg_index = current_k - MIN_K;
+            let dbg = &graphs[current_k - MIN_K];
+            for _ in 0..EXTRA_SEQUENCE_COUNT {
+                let iterator = (0..current_k).map(|_| match rng.next_u32() % 4 {
+                    0 => b'A',
+                    1 => b'C',
+                    2 => b'G',
+                    _ => b'T',
+                });
+                sequence.clear();
+                sequence.extend(iterator);
+
+                let dbg_node = dbg.get_node(&sequence);
+                let vodbg_node = vodbg.get_node(&sequence);
+
+                assert_eq!(dbg_node.is_some(), vodbg_node.is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn smaller_values_of_k() {
+        // All possible 2-mers.
+        let seqs = vec![b"AACCGGTTAGCTGATCA".to_vec()];
+        let (sbwt, lcs) = SbwtIndexBuilder::<BitPackedKmerSortingMem>::new()
+            .k(3).build_lcs(true)
+            .build_select_support(true)
+            .run_from_vecs(seqs.as_slice());
+        let lcs = lcs.unwrap();
+
+        let pnsv_tuned = PnsvTuned::new_with_default_values(&sbwt, &lcs);
+        let vodbg = VoDbg::new(&sbwt, &pnsv_tuned);
+        for kmer_end in 1..seqs[0].len() {
+            let kmer = &seqs[0][kmer_end-1..=kmer_end];
+            let node = vodbg.get_node(kmer).expect("Should exist.");
+            assert_eq!(vodbg.indegree(node), 4);
+            assert_eq!(vodbg.outdegree(node), 4);
+
+            let one_mer = vodbg.contract_left(node, 1);
+            assert_eq!(vodbg.indegree(one_mer), 4);
+            assert_eq!(vodbg.outdegree(one_mer), 4);
         }
     }
 }

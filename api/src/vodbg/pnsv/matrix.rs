@@ -146,6 +146,16 @@ pub struct MatrixSux {
 }
 
 impl MatrixSux {
+    pub fn empty() -> Self {
+        Self {
+            lower_bound: 0,
+            upper_bound: 0,
+            width: 0,
+            rows: vec![],
+            one_count: vec![],
+        }
+    }
+
     pub fn from_iterator<T, I>(input: I, width: usize, lower_bound: usize, upper_bound: usize) -> Self
     where 
         T: Into<usize>,
