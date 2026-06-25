@@ -13,9 +13,10 @@ use pnsv::Pnsv;
 
 use sux::bits::{BitVec, BitFieldVec};
 use sux::traits::{BitVecOpsMut, Rank};
-use value_traits::slices::{SliceByValue, SliceByValueMut};
 use sux::rank_sel::Rank9;
+use value_traits::slices::{SliceByValue, SliceByValueMut};
 
+pub mod iter;
 /// Module for Previous and Next Smaller Value support.
 pub mod pnsv;
 pub mod benchmark;
@@ -491,10 +492,9 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> VoDbg<'a, SS, P> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(unused)]
     use super::*;
     use crate::{BitPackedKmerSortingMem, LcsArray, SbwtIndexBuilder, SubsetMatrix};
-    use crate::dbg::{Dbg, Node as DbgNode};
+    use crate::dbg::Dbg;
     use pnsv::PnsvTuned;
 
     #[test]
@@ -530,7 +530,7 @@ mod tests {
                 .k(i).build_lcs(true)
                 .build_select_support(true)
                 .run_from_vecs(seqs.as_slice());
-            let last = sbwt_indices.len();
+            // let last = sbwt_indices.len();
             sbwt_indices.push((sbwt, lcs));
         }
 
@@ -607,7 +607,7 @@ mod tests {
                             let extended_op = vodbg.extend_left_with_index(vodbg_node, index);
                             match extended_op {
                                 Some(extended) => {
-                                    let mut contracted = vodbg.contract_left(extended, vodbg_node.k);
+                                    let contracted = vodbg.contract_left(extended, vodbg_node.k);
                                     assert_eq!(contracted, vodbg_node);
                                 },
                                 None => {
@@ -655,7 +655,7 @@ mod tests {
         let mut sequence: Vec<u8> = Vec::with_capacity(k);
         for current_k in EXTRA_KMERS_LOWER_BOUND_K..=k {
             let dbg_index = current_k - MIN_K;
-            let dbg = &graphs[current_k - MIN_K];
+            let dbg = &graphs[dbg_index];
             for _ in 0..EXTRA_SEQUENCE_COUNT {
                 let iterator = (0..current_k).map(|_| match rng.next_u32() % 4 {
                     0 => b'A',
