@@ -186,10 +186,8 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> VoDbg<'a, SS, P> {
             start = self.sbwt.inverse_lf_step(start)?;
             current_length -= 1;
         }
-        // println!("start: {}; tl: {}", start, target_length);
         let end = self.pnsv.next(start + 1, target_length);
-        // println!("end: {}", end);
-        // panic!();
+        let start = self.pnsv.previous(start, target_length);
         let node = new_node(start, end, target_length);
         Some(node)
     }
@@ -401,13 +399,10 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> VoDbg<'a, SS, P> {
         }
 
         let target_length = node.k;
-        loop {
+        while in_neighbour_start < end {
             let in_neighbour_end = self.pnsv.next(in_neighbour_start + 1, target_length);
             let innode = new_node(in_neighbour_start, in_neighbour_end, target_length);
             output.push((innode, inlabel));
-            if in_neighbour_end >= end {
-                break;
-            }
             in_neighbour_start = in_neighbour_end;
         }
     }
