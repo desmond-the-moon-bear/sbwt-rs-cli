@@ -204,19 +204,19 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> VoDbg<'a, SS, P> {
         }
 
         let target_length = node.k + 1;
-        let mut end = self.pnsv.next(start + 1, target_length);
+        let mut end;
         let mut current_index = 0;
-        while current_index < index {
-            if end == node.end {
-                return None;
+        while start < node.end {
+            end = self.pnsv.next(start + 1, target_length);
+            if current_index == index {
+                let extended_node = new_node(start, end, target_length);
+                return Some(extended_node);
             }
             start = end;
-            end = self.pnsv.next(start + 1, target_length);
             current_index += 1;
         }
 
-        let node = new_node(start, end, target_length);
-        Some(node)
+        None
     }
 
     /// Climb to an "upper" level of the graph where the strings in the nodes are one longer.
@@ -232,8 +232,9 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> VoDbg<'a, SS, P> {
         }
 
         let target_length = node.k + 1;
-        let mut end = self.pnsv.next(start + 1, target_length);
-        loop {
+        let mut end; 
+        while start < node.end {
+            end = self.pnsv.next(start + 1, target_length);
             let extended_node = new_node(start, end, target_length);
             kmer_buffer.clear();
             self.push_node_kmer(extended_node, &mut kmer_buffer);
@@ -242,14 +243,7 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> VoDbg<'a, SS, P> {
             if kmer_buffer[0] == character {
                 return Some(extended_node);
             }
-
-            // We've reached the end of the range for this node
-            if end == node.end {
-                break;
-            }
-
             start = end;
-            end = self.pnsv.next(start + 1, target_length);
         }
 
         None
@@ -590,7 +584,40 @@ mod tests {
                         assert_eq!(dbg_buffer[i].1, vodbg_buffer[i].1);
                         let dbg_in_neighbor = dbg_buffer[i].0;
                         let vodbg_in_neighbor = vodbg_buffer[i].0;
-                        assert_eq!(dbg.get_kmer(dbg_in_neighbor), vodbg.get_kmer(vodbg_in_neighbor));
+
+                        let dbg_in_neighbour_kmer = dbg.get_kmer(dbg_in_neighbor);
+                        let vodbg_in_neighbour_kmer = vodbg.get_kmer(vodbg_in_neighbor);
+                        assert_eq!(dbg_in_neighbour_kmer, vodbg_in_neighbour_kmer);
+
+                        // follow_inedge
+                        let dbg_from_inedge = dbg.follow_inedge(dbg_node, i).expect("Should exist.");
+                        let vodbg_from_inedge = vodbg.follow_inedge(vodbg_node, i).expect("Should exist.");
+                        assert_eq!(dbg_in_neighbour_kmer, dbg.get_kmer(dbg_from_inedge));
+                        assert_eq!(vodbg_in_neighbour_kmer, vodbg.get_kmer(vodbg_from_inedge));
+                    }
+
+                    // extend_left_with_character
+                    let vodbg_contracted = vodbg.contract_left(vodbg_node, vodbg_node.k - 1);
+                    let vodbg_extended = vodbg.extend_left_with_character(vodbg_contracted, sequence[0])
+                        .expect("Should exist.");
+                    assert_eq!(vodbg_node, vodbg_extended);
+
+                    // extend_left_with_index
+                    {
+                        let mut index = 0;
+                        loop {
+                            let extended_op = vodbg.extend_left_with_index(vodbg_node, index);
+                            match extended_op {
+                                Some(extended) => {
+                                    let mut contracted = vodbg.contract_left(extended, vodbg_node.k);
+                                    assert_eq!(contracted, vodbg_node);
+                                },
+                                None => {
+                                    break;
+                                }
+                            }
+                            index += 1;
+                        }
                     }
 
                     // push_out_neighbors
@@ -624,14 +651,5 @@ mod tests {
                 }
             }
         }
-
-        // contract_left
-        // contract_right
-        // extend_left_with_index
-        // extend_left_with_character
-        // extend_right
-        //
-        // follow_outedge
-        // follow_inedge
     }
 }
