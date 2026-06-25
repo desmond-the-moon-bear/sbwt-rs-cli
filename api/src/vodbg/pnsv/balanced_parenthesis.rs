@@ -66,7 +66,7 @@ impl Bp {
             });
 
             if pioneer_count == previous_pioneer_count {
-                todo!("Handle the case where the number of pioneer doesn't converge.");
+                panic!("The number of pioneers doesn't converge.");
             }
 
             if len <= block_size || pioneer_count == 0 {
