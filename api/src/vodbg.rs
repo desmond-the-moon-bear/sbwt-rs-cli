@@ -269,8 +269,9 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> VoDbg<'a, SS, P> {
         // is also valid for every other location where information about the out neighbours is
         // needed.
         let mut outdegree = 0;
+        let contracted = self.contract_left(node, node.k - 1);
         for &c in self.sbwt.alphabet() {
-            if self.follow_outedge(node, c).is_some() {
+            if self.extend_right(contracted, c).is_some() {
                 outdegree += 1;
             }
         }
@@ -365,8 +366,9 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> VoDbg<'a, SS, P> {
     /// label.
     pub fn push_out_neighbors(&self, node: Node, output: &mut Vec<(Node, u8)>) {
         assert!(node.k < self.sbwt.k() || !self.is_dummy(node.start));
+        let contracted = self.contract_left(node, node.k - 1);
         for &c in self.sbwt.alphabet() {
-            if let Some(neighbor) = self.follow_outedge(node, c) {
+            if let Some(neighbor) = self.extend_right(contracted, c) {
                 output.push((neighbor, c));
             }
         }
@@ -424,8 +426,9 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> VoDbg<'a, SS, P> {
     /// node to the output vector.
     pub fn push_outlabels(&self, node: Node, output: &mut Vec<u8>) {
         assert!(node.k < self.sbwt.k() || !self.is_dummy(node.start));
+        let contracted = self.contract_left(node, node.k - 1);
         for &c in self.sbwt.alphabet() {
-            if self.follow_outedge(node, c).is_some() {
+            if self.extend_right(contracted, c).is_some() {
                 output.push(c);
             }
         }
