@@ -53,9 +53,8 @@ where P: Pnsv + Send + Sync
             return None;
         }
 
-        let mut dummy_index;
         if self.dummy_marks[self.start] {
-            dummy_index = self.dummy_marks.rank(self.start);
+            let mut dummy_index = self.dummy_marks.rank(self.start);
             loop {
                 let invalid_start =
                     self.start < self.end
@@ -130,7 +129,7 @@ pub mod tests {
 
         let vodbg_sbwt = &sbwt_indices[k - MIN_K].0;
         let vodbg_lcs = sbwt_indices[k - MIN_K].1.as_ref().unwrap();
-        let pnsv_tuned = PnsvTuned::new_with_default_values(vodbg_sbwt, vodbg_lcs);
+        let pnsv_tuned = PnsvTuned::new_with_default_values(vodbg_sbwt, vodbg_lcs, vodbg_sbwt.k());
         let vodbg = VoDbg::new(vodbg_sbwt, &pnsv_tuned);
 
         let mut vodbg_node_iterator = node_iterator_with_k(&vodbg, 0);

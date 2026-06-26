@@ -105,7 +105,7 @@ impl Pnsv for PnsvDynOwned {
 // around 200 i.e. the target length. This value is equal to approx log_4(200).
 const TARGET_LENGTH_LOG_4_FLOOR: usize = 3;
 
-pub fn make_ranges(extend: &impl ExtendRight, count: usize) -> Ranges {
+pub fn make_ranges(extend: &impl ExtendRight, count: usize, max_k: usize) -> Ranges {
     let mut ranges_upper_bound = 0;
     let mut bits_in_current_level_of_ranges = usize::BITS as usize * 4;
     let mut total_bits = bits_in_current_level_of_ranges;
@@ -115,17 +115,18 @@ pub fn make_ranges(extend: &impl ExtendRight, count: usize) -> Ranges {
         total_bits += bits_in_current_level_of_ranges;
     }
     ranges_upper_bound = ranges_upper_bound.min(Ranges::MAX_K);
+    ranges_upper_bound = ranges_upper_bound.min(max_k);
     Ranges::new(extend, count, ranges_upper_bound)
 }
 
-pub fn pnsv_simd_fallback_matrix(extend: &impl ExtendRight, lcs: &LcsArray, scan_bound: usize) -> PnsvDynOwned {
+pub fn pnsv_simd_fallback_matrix(extend: &impl ExtendRight, lcs: &LcsArray, max_k: usize, scan_bound: usize) -> PnsvDynOwned {
     let count = lcs.len();
 
     let mut structures: Vec<Box<dyn Pnsv>> = vec![];
 
     log::info!("[pnsv_simd_fallback_matrix] creating ranges...");
 
-    let ranges = make_ranges(extend, count);
+    let ranges = make_ranges(extend, count, max_k);
     let ranges_upper_bound = ranges.max_target();
     let ranges_box = Box::new(ranges);
     structures.push(ranges_box);
@@ -172,13 +173,13 @@ pub fn pnsv_simd_fallback_matrix(extend: &impl ExtendRight, lcs: &LcsArray, scan
     }
 }
 
-pub fn pnsv_matrix_simd(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwned {
+pub fn pnsv_matrix_simd(extend: &impl ExtendRight, lcs: &LcsArray, max_k: usize) -> PnsvDynOwned {
     let count = lcs.len();
 
     let mut structures: Vec<Box<dyn Pnsv>> = vec![];
 
     log::info!("[pnsv_matrix_simd] creating ranges...");
-    let ranges = make_ranges(extend, count);
+    let ranges = make_ranges(extend, count, max_k);
     let ranges_upper_bound = ranges.max_target();
     let ranges_box = Box::new(ranges);
     structures.push(ranges_box);
@@ -208,13 +209,13 @@ pub fn pnsv_matrix_simd(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwn
     }
 }
 
-pub fn pnsv_wwt_simd(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwned {
+pub fn pnsv_wwt_simd(extend: &impl ExtendRight, lcs: &LcsArray, max_k: usize) -> PnsvDynOwned {
     let count = lcs.len();
 
     let mut structures: Vec<Box<dyn Pnsv>> = vec![];
 
     log::info!("[pnsv_wwt_simd] creating ranges...");
-    let ranges = make_ranges(extend, count);
+    let ranges = make_ranges(extend, count, max_k);
     let ranges_upper_bound = ranges.max_target();
     let ranges_box = Box::new(ranges);
     structures.push(ranges_box);
@@ -227,7 +228,7 @@ pub fn pnsv_wwt_simd(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwned 
     if wwt_upper_bound > ranges_upper_bound {
         log::info!("[pnsv_wwt_simd] creating windowed wavelet tree...");
         let window_size = wwt_upper_bound - ranges_upper_bound + 1;
-        let wavelet = WWT::from_iterator(iterator.clone(), ranges_upper_bound, window_size);
+        let wavelet = WWT::from_iterator(iterator.clone(), count, ranges_upper_bound, window_size);
         let wavelet_box = Box::new(wavelet);
         structures.push(wavelet_box);
     }
@@ -318,28 +319,23 @@ pub struct PnsvTuned {
 
 impl PnsvTuned {
     pub const DEFAULT_SCAN_BOUND: usize = 16;
-    pub const DEFAULT_FALLBACK_OVERLAP: usize = 2;
+    pub const DEFAULT_FALLBACK_OVERLAP: usize = 6;
 
-    pub fn new_with_default_values(extend: &impl ExtendRight, lcs: &LcsArray) -> Self {
-        Self::new(extend, lcs, Self::DEFAULT_SCAN_BOUND, Self::DEFAULT_FALLBACK_OVERLAP)
+    pub fn new_with_default_values(extend: &impl ExtendRight, lcs: &LcsArray, max_k: usize) -> Self {
+        Self::new(extend, lcs, max_k, Self::DEFAULT_SCAN_BOUND, Self::DEFAULT_FALLBACK_OVERLAP)
     }
 
-    pub fn new(extend: &impl ExtendRight, lcs: &LcsArray, scan_bound: usize, fallback_scan_overlap: usize) -> Self {
+    pub fn new(extend: &impl ExtendRight, lcs: &LcsArray, max_k: usize, scan_bound: usize, mut fallback_scan_overlap: usize) -> Self {
         let count = lcs.len();
 
         log::info!("[PnsvTuned::new] creating ranges...");
-        let mut ranges_upper_bound = 0;
-        let mut bits_in_current_level_of_ranges = usize::BITS as usize * 4;
-        while bits_in_current_level_of_ranges < count {
-            ranges_upper_bound += 1;
-            bits_in_current_level_of_ranges *= 4;
-        }
-        ranges_upper_bound = ranges_upper_bound.min(Ranges::MAX_K);
-        let ranges = Ranges::new(extend, count, ranges_upper_bound);
+        let ranges = make_ranges(extend, count, max_k);
+        let ranges_upper_bound = ranges.max_target();
 
         let log_4 = (usize::BITS - count.leading_zeros()).div_ceil(2) as usize;
         let mut matrix_upper_bound = log_4 - TARGET_LENGTH_LOG_4_FLOOR; 
         matrix_upper_bound = matrix_upper_bound.min(ranges_upper_bound + 1 + matrix::MAX_ROWS);
+        matrix_upper_bound = matrix_upper_bound.min(max_k);
         
         let mut matrix_option = None;
         let mut lcs_simd_option = None;
@@ -353,7 +349,7 @@ impl PnsvTuned {
                 s.spawn(|_| {
                     log::info!("[PnsvTuned::new] creating matrix...");
                     let matrix = PnsvMatrixSux::from_iterator(matrix_iterator, count, ranges_upper_bound + 1, matrix_upper_bound);
-                    assert!(matrix.max_target() >= fallback_scan_overlap, "Make sure the fallback scan overlap has a reasonably small value (i.e. most 5).");
+                    fallback_scan_overlap = fallback_scan_overlap.min(matrix.max_target());
                     matrix_option = Some(matrix);
                 });
             }
@@ -429,6 +425,90 @@ impl Pnsv for PnsvTuned {
         }
 
         self.lcs_simd.scan_right(index, target_length as u8)
+    }
+}
+
+pub struct PnsvSafe {
+    pub ranges: Ranges,
+    pub wwt: WWT,
+    pub lcs_simd: LcsSimd,
+    pub scan_bound: usize,
+}
+
+impl PnsvSafe {
+    pub const DEFAULT_SCAN_BOUND: usize = 16;
+
+    pub fn new_with_default_values(extend: &impl ExtendRight, lcs: &LcsArray, max_k: usize) -> Self {
+        Self::new(extend, lcs, max_k, Self::DEFAULT_SCAN_BOUND)
+    }
+
+    pub fn new(extend: &impl ExtendRight, lcs: &LcsArray, max_k: usize, scan_bound: usize) -> Self {
+        let count = lcs.len();
+
+        log::info!("[PnsvSafe::new] creating ranges...");
+        let ranges = make_ranges(extend, count, max_k);
+        let ranges_upper_bound = ranges.max_target();
+
+        let mut wwt_option = None;
+        let mut lcs_simd_option = None;
+
+        let wwt_iterator = (0..count).map(|index| lcs.access(index));
+        let lcs_simd_iterator = (0..count).map(|index| lcs.access(index) as u8);
+
+        let thread_pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+        thread_pool.scope(|s| {
+            s.spawn(|_| {
+                log::info!("[PnsvSafe::new] creating windowed wavelet tree...");
+                let window_size = max_k - ranges_upper_bound + 1;
+                let wwt = WWT::from_iterator(wwt_iterator, count, ranges_upper_bound, window_size);
+                wwt_option = Some(wwt);
+            });
+            s.spawn(|_| {
+                log::info!("[PnsvSafe::new] creating lcs simd...");
+                let lcs_simd = LcsSimd::from_iterator(lcs_simd_iterator, count);
+                lcs_simd_option = Some(lcs_simd);
+            });
+        });
+
+        let wwt = wwt_option.expect("Creating windowed wavelet tree should not fail.");
+        let lcs_simd = lcs_simd_option.expect("Creating lcs simd should not fail.");
+        
+        log::info!("[PnsvSafe::new] target length ranges: 1:{}:..", ranges_upper_bound);
+
+        Self {
+            ranges,
+            wwt,
+            lcs_simd,
+            scan_bound,
+        }
+    }
+}
+
+impl Pnsv for PnsvSafe {
+    fn previous(&self, index: usize, target_length: usize) -> usize {
+        if target_length <= self.ranges.max_target() {
+            return self.ranges.previous(index, target_length);
+        }
+        let result = self.lcs_simd.scan_left_bounded(index, target_length as u8, self.scan_bound);
+        match result {
+            Ok(index) => index,
+            Err(continue_search_index) => {
+                self.wwt.previous(continue_search_index, target_length)
+            }
+        }
+    }
+
+    fn next(&self, index: usize, target_length: usize) -> usize {
+        if target_length <= self.ranges.max_target() {
+            return self.ranges.next(index, target_length);
+        }
+        let result = self.lcs_simd.scan_right_bounded(index, target_length as u8, self.scan_bound);
+        match result {
+            Ok(index) => index,
+            Err(continue_search_index) => {
+                self.wwt.next(continue_search_index, target_length)
+            }
+        }
     }
 }
 

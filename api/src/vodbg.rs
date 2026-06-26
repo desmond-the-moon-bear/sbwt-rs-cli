@@ -544,7 +544,7 @@ mod tests {
 
         let vodbg_sbwt = &sbwt_indices[k - MIN_K].0;
         let vodbg_lcs = sbwt_indices[k - MIN_K].1.as_ref().unwrap();
-        let pnsv_tuned = PnsvTuned::new_with_default_values(vodbg_sbwt, vodbg_lcs);
+        let pnsv_tuned = PnsvTuned::new_with_default_values(vodbg_sbwt, vodbg_lcs, k);
         let vodbg = VoDbg::new(vodbg_sbwt, &pnsv_tuned);
 
         let alphabet = sbwt_indices[k - MIN_K].0.alphabet();
@@ -687,7 +687,7 @@ mod tests {
             .run_from_vecs(seqs.as_slice());
         let lcs = lcs.unwrap();
 
-        let pnsv_tuned = PnsvTuned::new_with_default_values(&sbwt, &lcs);
+        let pnsv_tuned = PnsvTuned::new_with_default_values(&sbwt, &lcs, sbwt.k());
         let vodbg = VoDbg::new(&sbwt, &pnsv_tuned);
         for kmer_end in 1..seqs[0].len() {
             let kmer = &seqs[0][kmer_end-1..=kmer_end];

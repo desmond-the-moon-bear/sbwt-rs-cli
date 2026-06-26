@@ -36,7 +36,7 @@ impl Node {
 }
 
 impl WindowedWaveletTree {
-    pub fn from_iterator<T, I>(input: I, lower_bound: usize, window_size: usize) -> Self
+    pub fn from_iterator<T, I>(input: I, count: usize, lower_bound: usize, window_size: usize) -> Self
     where
         T: Into<usize>,
         I: Iterator<Item = T> + Clone,
@@ -88,6 +88,10 @@ impl WindowedWaveletTree {
             });
         }
 
+        let ten_percent = count / 10;
+        let mut border = ten_percent;
+        let mut percent_count = 0;
+
         // First pass over the items in order to get the number of bits per bitvector. When
         // allocating the bitvectors this count will be used to allocate enough space so that extra
         // allocations from the expansion of the bitvector when the bits are pushed one by one are
@@ -95,7 +99,7 @@ impl WindowedWaveletTree {
         let upper_bound = lower_bound + window_size - 1;
         let mut bits_per_node = vec![0_usize; tree.len()];
         let mut current_node;
-        for item in input.clone() {
+        for (index, item) in input.clone().enumerate() {
             let clamped_item = item.into().clamp(lower_bound, upper_bound);
 
             current_node = 0;
@@ -120,7 +124,16 @@ impl WindowedWaveletTree {
                     break;
                 }
             }
+
+            if index >= border {
+                border += ten_percent;
+                percent_count += 1;
+                log::info!("[WWT::from_iterator] first pass scanning... {}0%", percent_count);
+            }
         }
+
+        border = ten_percent;
+        percent_count = 0;
 
         // Allocate the raw vectors with the needed capacity.
         let mut data_raw: Vec<RawVector> = vec![];
@@ -129,7 +142,7 @@ impl WindowedWaveletTree {
         }
 
         // Second pass to populate the bits in the bitvectors.
-        for item in input.clone() {
+        for (index, item) in input.clone().enumerate() {
             let clamped_item = item.into().clamp(lower_bound, upper_bound);
 
             current_node = 0;
@@ -152,6 +165,12 @@ impl WindowedWaveletTree {
                 if current_node == Node::NULL {
                     break;
                 }
+            }
+
+            if index >= border {
+                border += ten_percent;
+                percent_count += 1;
+                log::info!("[WWT::from_iterator] second pass scanning... {}0%", percent_count);
             }
         }
 
@@ -437,7 +456,7 @@ mod tests {
 
     fn test_with_parameters(items: &[usize], lower_bound: usize, window_size: usize) {
         let upper_bound = lower_bound + window_size - 1;
-        let wavelet = WindowedWaveletTree::from_iterator(items.iter().cloned(), lower_bound, window_size);
+        let wavelet = WindowedWaveletTree::from_iterator(items.iter().cloned(), items.len(), lower_bound, window_size);
         for i in 0..items.len() {
             for target_length in lower_bound + 1..=lower_bound + window_size {
                 assert_eq!(
