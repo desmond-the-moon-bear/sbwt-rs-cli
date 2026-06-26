@@ -36,6 +36,15 @@ impl Node {
 }
 
 impl WindowedWaveletTree {
+    pub fn empty() -> Self {
+        Self {
+            lower_bound: 0,
+            window_size: 0,
+            tree: vec![],
+            data: vec![],
+        }
+    }
+
     pub fn from_iterator<T, I>(input: I, count: usize, lower_bound: usize, window_size: usize) -> Self
     where
         T: Into<usize>,
@@ -404,12 +413,16 @@ impl WindowedWaveletTree {
 
     #[inline]
     pub fn len(&self) -> usize {
-        self.data[0].len()
+        if self.is_empty() {
+            0
+        } else {
+            self.data[0].len()
+        }
     }
 
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.data[0].is_empty()
+        self.window_size == 0
     }
 }
 
@@ -426,7 +439,7 @@ impl super::Pnsv for WindowedWaveletTree {
 
     #[inline]
     fn max_target(&self) -> usize {
-        self.lower_bound + self.window_size - 1
+        (self.lower_bound + self.window_size).saturating_sub(1)
     }
 }
 

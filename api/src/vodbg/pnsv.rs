@@ -384,7 +384,7 @@ impl Pnsv for PnsvTuned {
             return self.ranges.previous(index, target_length);
         }
 
-        if self.matrix.width != 0 {
+        if !self.matrix.is_empty() {
             if target_length <= self.matrix.max_target() - self.fallback_scan_overlap {
                 return self.matrix.previous(index, target_length);
             }
@@ -408,7 +408,7 @@ impl Pnsv for PnsvTuned {
             return self.ranges.next(index, target_length);
         }
 
-        if self.matrix.width != 0 {
+        if !self.matrix.is_empty() {
             if target_length <= self.matrix.max_target() - self.fallback_scan_overlap {
                 return self.matrix.next(index, target_length);
             }
@@ -459,8 +459,17 @@ impl PnsvSafe {
         thread_pool.scope(|s| {
             s.spawn(|_| {
                 log::info!("[PnsvSafe::new] creating windowed wavelet tree...");
-                let window_size = max_k - ranges_upper_bound + 1;
-                let wwt = WWT::from_iterator(wwt_iterator, count, ranges_upper_bound, window_size);
+                // The last few target lengths will have a small maximum range length, therefore,
+                // it is better to not include them in the range of the windowed wavelet tree to
+                // save on memory.
+                let guaranteed_scan_hits_last_lengths = (usize::BITS - (scan_bound * LcsSimd::LANES - 1).leading_zeros()) as usize / 2;
+                let wwt_upper_bound = max_k.saturating_sub(guaranteed_scan_hits_last_lengths);
+                let wwt = if wwt_upper_bound > ranges_upper_bound {
+                    let window_size = wwt_upper_bound - ranges_upper_bound + 1;
+                    WWT::from_iterator(wwt_iterator, count, ranges_upper_bound, window_size)
+                } else {
+                    WWT::empty()
+                };
                 wwt_option = Some(wwt);
             });
             s.spawn(|_| {
@@ -473,7 +482,7 @@ impl PnsvSafe {
         let wwt = wwt_option.expect("Creating windowed wavelet tree should not fail.");
         let lcs_simd = lcs_simd_option.expect("Creating lcs simd should not fail.");
         
-        log::info!("[PnsvSafe::new] target length ranges: 1:{}:..", ranges_upper_bound);
+        log::info!("[PnsvSafe::new] target length ranges: 1:{}:{}:..", ranges_upper_bound, wwt.max_target());
 
         Self {
             ranges,
@@ -489,12 +498,16 @@ impl Pnsv for PnsvSafe {
         if target_length <= self.ranges.max_target() {
             return self.ranges.previous(index, target_length);
         }
-        let result = self.lcs_simd.scan_left_bounded(index, target_length as u8, self.scan_bound);
-        match result {
-            Ok(index) => index,
-            Err(continue_search_index) => {
-                self.wwt.previous(continue_search_index, target_length)
+        if !self.wwt.is_empty() {
+            let result = self.lcs_simd.scan_left_bounded(index, target_length as u8, self.scan_bound);
+            match result {
+                Ok(index) => index,
+                Err(continue_search_index) => {
+                    self.wwt.previous(continue_search_index, target_length)
+                }
             }
+        } else {
+            self.lcs_simd.previous(index, target_length)
         }
     }
 
@@ -502,12 +515,16 @@ impl Pnsv for PnsvSafe {
         if target_length <= self.ranges.max_target() {
             return self.ranges.next(index, target_length);
         }
-        let result = self.lcs_simd.scan_right_bounded(index, target_length as u8, self.scan_bound);
-        match result {
-            Ok(index) => index,
-            Err(continue_search_index) => {
-                self.wwt.next(continue_search_index, target_length)
+        if !self.wwt.is_empty() {
+            let result = self.lcs_simd.scan_right_bounded(index, target_length as u8, self.scan_bound);
+            match result {
+                Ok(index) => index,
+                Err(continue_search_index) => {
+                    self.wwt.next(continue_search_index, target_length)
+                }
             }
+        } else {
+            self.lcs_simd.next(index, target_length)
         }
     }
 }
