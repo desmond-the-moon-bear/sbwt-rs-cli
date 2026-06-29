@@ -319,7 +319,7 @@ pub struct PnsvTuned {
 
 impl PnsvTuned {
     pub const DEFAULT_SCAN_BOUND: usize = 16;
-    pub const DEFAULT_FALLBACK_OVERLAP: usize = 6;
+    pub const DEFAULT_FALLBACK_OVERLAP: usize = 2;
 
     pub fn new_with_default_values(extend: &impl ExtendRight, lcs: &LcsArray, max_k: usize) -> Self {
         Self::new(extend, lcs, max_k, Self::DEFAULT_SCAN_BOUND, Self::DEFAULT_FALLBACK_OVERLAP)

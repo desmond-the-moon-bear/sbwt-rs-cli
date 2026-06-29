@@ -200,7 +200,7 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> VoDbg<'a, SS, P> {
 
         let mut start = node.start;
         // Skip the dummy node which has only $ except for the suffix of the range.
-        if self.is_dummy(start) && self.get_dummy_length(start) == node.k {
+        if self.is_dummy(start) && self.get_dummy_length(start) <= node.k {
             start += 1;
         }
 
@@ -222,29 +222,57 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> VoDbg<'a, SS, P> {
 
     /// Climb to an "upper" level of the graph where the strings in the nodes are one longer.
     /// Returns a node only if it exists.
-    pub fn extend_left_with_character(&self, node: Node, character: u8) -> Option<Node> {
+    pub fn extend_left_with_character(&self, node: Node, character: u8, kmer_buffer: &mut Vec<u8>) -> Option<Node> {
         assert!(node.k < self.sbwt.k() || !self.is_dummy(node.start));
-        let mut kmer_buffer = Vec::<u8>::with_capacity(node.k + 1);
+        // let mut kmer_buffer = Vec::<u8>::with_capacity(node.k + 1);
+
+        let in_left_half = {
+            let half = self.sbwt.alphabet().len() >> 1;
+            match self.sbwt.alphabet().iter().position(|&c| c == character) {
+                Some(index) => index < half,
+                None => return None,
+            }
+        };
 
         let mut start = node.start;
         // Skip the dummy node which has only $ except for the suffix of the range.
-        if self.is_dummy(start) && self.get_dummy_length(start) == node.k {
+        if self.is_dummy(start) && self.get_dummy_length(start) <= node.k {
             start += 1;
         }
 
         let target_length = node.k + 1;
         let mut end; 
-        while start < node.end {
-            end = self.pnsv.next(start + 1, target_length);
-            let extended_node = new_node(start, end, target_length);
+
+        if in_left_half {
+            while start < node.end {
+                end = self.pnsv.next(start + 1, target_length);
+                let extended_node = new_node(start, end, target_length);
+                kmer_buffer.clear();
+                self.push_node_kmer(extended_node, kmer_buffer);
+                
+                // It is guaranteed that there is at least one character in the suffix.
+                if kmer_buffer[0] == character {
+                    return Some(extended_node);
+                }
+                start = end;
+            }
+
+            return None;
+        }
+
+        end = node.end;
+        let mut new_start;
+        while end > start {
+            new_start = self.pnsv.previous(end - 1, target_length);
+            let extended_node = new_node(new_start, end, target_length);
             kmer_buffer.clear();
-            self.push_node_kmer(extended_node, &mut kmer_buffer);
-            
-            // It is guaranteed that there is at least one character in the suffix.
+            self.push_node_kmer(extended_node, kmer_buffer);
+
             if kmer_buffer[0] == character {
                 return Some(extended_node);
             }
-            start = end;
+
+            end = new_start;
         }
 
         None
@@ -555,6 +583,8 @@ mod tests {
         let mut dbg_outlabels = vec![];
         let mut vodbg_outlabels = vec![];
 
+        let mut kmer_buffer = vec![];
+
         for current_k in MIN_K..=k {
             let dbg_index = current_k - MIN_K;
             let dbg = &graphs[dbg_index];
@@ -599,7 +629,7 @@ mod tests {
 
                     // extend_left_with_character
                     let vodbg_contracted = vodbg.contract_left(vodbg_node, vodbg_node.k - 1);
-                    let vodbg_extended = vodbg.extend_left_with_character(vodbg_contracted, sequence[0])
+                    let vodbg_extended = vodbg.extend_left_with_character(vodbg_contracted, sequence[0], &mut kmer_buffer)
                         .expect("Should exist.");
                     assert_eq!(vodbg_node, vodbg_extended);
 
