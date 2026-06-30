@@ -1,7 +1,8 @@
 // Code by Martin Kostadinov.
 
-use crate::ExtendRight;
+use super::Pnsv;
 use crate::util::DNA_ALPHABET;
+use crate::ExtendRight;
 
 /// Precompute the ranges in the SBWT index for each suffix of length k up to a given number. Use
 /// those range borders to perform ContractLeft. Each level has at most O(4^k) border values.
@@ -102,6 +103,9 @@ impl Ranges {
     /// ContractLeft operation.
     pub fn next(&self, index: usize, target_length: usize) -> usize {
         assert!(target_length < self.levels.len());
+        if index == 0 {
+            return 0;
+        }
         if self.levels[target_length].len() >= Self::SCAN_UPPER_BOUND {
             let result = self.levels[target_length].binary_search(&index);
             // If the value is found, then the value under the index is smaller than the target
@@ -126,7 +130,7 @@ impl Ranges {
     }
 }
 
-impl super::Pnsv for Ranges {
+impl Pnsv for Ranges {
     #[inline]
     fn previous(&self, index: usize, target_length: usize) -> usize {
         self.previous(index, target_length)
@@ -139,5 +143,54 @@ impl super::Pnsv for Ranges {
 
     #[inline]
     fn max_target(&self) -> usize { self.levels.len() - 1 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vodbg::pnsv::LcsSimd;
+    use crate::{BitPackedKmerSortingMem, SbwtIndexBuilder};
+
+    #[test]
+    fn randomised_kmers() {
+        use rand_chacha::ChaCha20Rng;
+        use rand_chacha::rand_core::SeedableRng;
+        use rand_chacha::rand_core::RngCore;
+
+        let min_k: usize = 3;
+        let max_k: usize = Ranges::MAX_K;
+        let kmer_count = 1024;
+        let mut rng = ChaCha20Rng::from_seed([53; 32]);
+
+        let mut seqs = Vec::<Vec<u8>>::new();
+        for _ in 0..kmer_count {
+            let kmer: Vec<u8> = (0..max_k).map(|_| match rng.next_u32() % 4 {
+                0 => b'A',
+                1 => b'C',
+                2 => b'G',
+                _ => b'T',
+            }).collect();
+            seqs.push(kmer);
+        }
+
+        seqs.sort();
+        seqs.dedup();
+
+        let (sbwt, lcs) = SbwtIndexBuilder::<BitPackedKmerSortingMem>::new()
+            .k(max_k).build_lcs(true)
+            .build_select_support(true)
+            .run_from_vecs(seqs.as_slice());
+
+        let lcs = lcs.unwrap();
+        let iterator = (0..lcs.len()).map(|index| lcs.access(index) as u8);
+        let lcs_simd = LcsSimd::from_iterator(iterator, lcs.len());
+        let ranges = Ranges::new(&sbwt, lcs.len(), max_k);
+        for target_length in min_k..=max_k {
+            for i in 0..lcs.len() {
+                assert_eq!(lcs_simd.previous(i, target_length), ranges.previous(i, target_length));
+                assert_eq!(lcs_simd.next(i, target_length), ranges.next(i, target_length));
+            }
+        }
+    }
 }
 
