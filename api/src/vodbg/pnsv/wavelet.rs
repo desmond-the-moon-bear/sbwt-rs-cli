@@ -5,6 +5,7 @@ use simple_sds_sbwt::ops::{BitVec, Rank, Select, SelectZero};
 use simple_sds_sbwt::raw_vector::{PushRaw, RawVector};
 
 use std::collections::vec_deque::VecDeque;
+use std::cell::RefCell;
 
 /// A wavelet tree over a continuous subset of the whole (ordered) alphabet. Supports previous
 /// smaller and next smaller value operations in log(n) time where n is the size of the subset.
@@ -16,6 +17,9 @@ pub struct WindowedWaveletTree {
     pub window_size: usize,
     pub tree: Vec<Node>,
     pub data: Vec<BitVector>,
+    /// In order to keep the semantics that the Pnsv structures answer their queries under an
+    /// immutable reference, this buffer has to be under a RefCell.
+    buffer: RefCell<Vec<(usize, usize)>>,
 }
 
 /// A node in the wavelet tree. Contains indices for navigating the tree.
@@ -42,6 +46,7 @@ impl WindowedWaveletTree {
             window_size: 0,
             tree: vec![],
             data: vec![],
+            buffer: RefCell::new(vec![]),
         }
     }
 
@@ -198,46 +203,16 @@ impl WindowedWaveletTree {
             window_size,
             tree,
             data,
+            buffer: RefCell::new(vec![]),
         }
     }
 
-    /// Climb up the tree to find the index of a given character in the source string.
-    pub fn absolute_index(&self, mut node: usize, mut index_in_node: usize) -> usize {
-        let mut parent;
-        while node != 0 {
-            parent = self.tree[node].parent;
-            let parent_data_index = self.tree[parent].data;
-            index_in_node = if self.tree[parent].left_child == node {
-                // If the node is the left chlid of its parent, then the bit representing the
-                // current index in the parent has a value of 0.
-                match self.data[parent_data_index].select_zero(index_in_node) {
-                    Some(value) => value,
-                    None => {
-                        return self.data[0].len();
-                    }
-                }
-            } else {
-                // Otherwise it has a value of 1.
-                match self.data[parent_data_index].select(index_in_node) {
-                    Some(value) => value,
-                    None => {
-                        return self.data[0].len();
-                    }
-                }
-            };
-            node = parent;
-        }
-        index_in_node
-    }
-
-    // Find the previous smaller value.
+    /// Find the previous smaller value. If the value at the index is smaller than the target
+    /// length, returns that index.
     pub fn previous(&self, mut index: usize, target_length: usize) -> usize {
-        if target_length <= self.lower_bound {
-            return 0;
-        }
-
-        let mut result = 0;
         let mut current_node = 0;
+        let mut candidate_stack = self.buffer.borrow_mut();
+        candidate_stack.clear();
 
         loop {
             if self.tree[current_node].lower_bound >= target_length {
@@ -246,7 +221,7 @@ impl WindowedWaveletTree {
 
             let max_value = self.tree[current_node].lower_bound + self.tree[current_node].window_size - 1;
             if max_value < target_length {
-                result = result.max(self.absolute_index(current_node, index));
+                candidate_stack.push((current_node, index));
                 break;
             }
 
@@ -263,15 +238,14 @@ impl WindowedWaveletTree {
                 // Store the absolute position of the rightmost 0 up to the current index
                 // (inclusive) if it is better than the previous solutions.
                 if !is_one {
-                    result = result.max(self.absolute_index(current_node, index));
-                }
-                if zero_rank > 0 {
+                    candidate_stack.push((current_node, index));
+                } else if zero_rank > 0 {
                     // The number of zeroes before can be at most the number of zeroes in the given
                     // bitvector. Searching for the last one should always succeed.
                     let rightmost_zero_index_before = self.data[data_index]
                         .select_zero(zero_rank - 1)
                         .unwrap();
-                    result = result.max(self.absolute_index(current_node, rightmost_zero_index_before));
+                    candidate_stack.push((current_node, rightmost_zero_index_before));
                 }
             }
 
@@ -324,17 +298,22 @@ impl WindowedWaveletTree {
             current_node = self.tree[current_node].right_child;
         }
 
-        result
-    }
-
-    // Find the next smaller value.
-    pub fn next(&self, mut index: usize, target_length: usize) -> usize {
-        if target_length <= self.lower_bound {
-            return self.len();
+        let (mut result_node, mut result) = candidate_stack.pop().unwrap();
+        while let Some((current_node, index_in_node)) = candidate_stack.pop() {
+            result = self.climb(result_node, result, current_node);
+            result_node = current_node;
+            result = result.max(index_in_node);
         }
 
-        let mut result = self.len();
+        self.climb(result_node, result, 0)
+    }
+
+    /// Find the next smaller value. If the value at the index is smaller than the target length,
+    /// returns that index.
+    pub fn next(&self, mut index: usize, target_length: usize) -> usize {
         let mut current_node = 0;
+        let mut candidate_stack = self.buffer.borrow_mut();
+        candidate_stack.clear();
 
         loop {
             if self.tree[current_node].lower_bound >= target_length {
@@ -343,7 +322,7 @@ impl WindowedWaveletTree {
 
             let max_value = self.tree[current_node].lower_bound + self.tree[current_node].window_size - 1;
             if max_value < target_length {
-                result = result.min(self.absolute_index(current_node, index));
+                candidate_stack.push((current_node, index));
                 break;
             }
 
@@ -360,14 +339,13 @@ impl WindowedWaveletTree {
                 // Store the absolute position of the leftmost 0 after the current index
                 // (inclusive) if it is better than the previous solutions.
                 if !is_one {
-                    result = result.min(self.absolute_index(current_node, index));
-                }
-                if zero_rank < self.data[data_index].count_zeros() {
+                    candidate_stack.push((current_node, index));
+                } else if zero_rank < self.data[data_index].count_zeros() {
                     // There is at least one zero afterwards.
                     let leftmost_zero_index_after = self.data[data_index]
                         .select_zero(zero_rank)
                         .unwrap();
-                    result = result.min(self.absolute_index(current_node, leftmost_zero_index_after));
+                    candidate_stack.push((current_node, leftmost_zero_index_after));
                 }
             }
 
@@ -408,7 +386,50 @@ impl WindowedWaveletTree {
             current_node = self.tree[current_node].right_child;
         }
 
-        result
+        if candidate_stack.is_empty() {
+            return self.len();
+        }
+
+        let (mut result_node, mut result) = candidate_stack.pop().unwrap();
+        while let Some((current_node, index_in_node)) = candidate_stack.pop() {
+            result = self.climb(result_node, result, current_node);
+            result_node = current_node;
+            result = result.min(index_in_node);
+        }
+
+        self.climb(result_node, result, 0)
+    }
+
+    /// Climb up the tree to find the index of a given character in the source string.
+    #[inline]
+    fn climb(&self, mut node: usize, mut index_in_node: usize, ancestor: usize) -> usize {
+        let mut parent;
+        let mut parent_data_index;
+        while node > ancestor {
+            parent = self.tree[node].parent;
+            parent_data_index = self.tree[parent].data;
+            index_in_node = if self.tree[parent].left_child == node {
+                // If the node is the left child of its parent, then the bit representing the
+                // current index in the parent has a value of 0.
+                match self.data[parent_data_index].select_zero(index_in_node) {
+                    Some(value) => value,
+                    None => {
+                        return self.data[0].len();
+                    }
+                }
+            } else {
+                // Otherwise it has a value of 1.
+                match self.data[parent_data_index].select(index_in_node) {
+                    Some(value) => value,
+                    None => {
+                        return self.data[0].len();
+                    }
+                }
+            };
+            node = parent;
+        }
+        assert!(node == ancestor);
+        index_in_node
     }
 
     #[inline]
