@@ -16,6 +16,7 @@ use sux::traits::{BitVecOpsMut, Rank};
 use sux::rank_sel::Rank9;
 use value_traits::slices::{SliceByValue, SliceByValueMut};
 
+pub mod count;
 pub mod iter;
 /// Module for Previous and Next Smaller Value support.
 pub mod pnsv;
@@ -561,7 +562,6 @@ mod tests {
                 .k(i).build_lcs(true)
                 .build_select_support(true)
                 .run_from_vecs(seqs.as_slice());
-            // let last = sbwt_indices.len();
             sbwt_indices.push((sbwt, lcs));
         }
 

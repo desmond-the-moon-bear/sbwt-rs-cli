@@ -236,10 +236,12 @@ impl WindowedWaveletTree {
             if min_value_in_right_child - 1 < target_length {
                 // The maximum possible value in the left child is smaller than the target length.
                 // Store the absolute position of the rightmost 0 up to the current index
-                // (inclusive) if it is better than the previous solutions.
+                // (inclusive).
                 if !is_one {
                     candidate_stack.push((current_node, index));
-                } else if zero_rank > 0 {
+                    break;
+                }
+                if zero_rank > 0 {
                     // The number of zeroes before can be at most the number of zeroes in the given
                     // bitvector. Searching for the last one should always succeed.
                     let rightmost_zero_index_before = self.data[data_index]
@@ -340,7 +342,9 @@ impl WindowedWaveletTree {
                 // (inclusive) if it is better than the previous solutions.
                 if !is_one {
                     candidate_stack.push((current_node, index));
-                } else if zero_rank < self.data[data_index].count_zeros() {
+                    break;
+                }
+                if zero_rank < self.data[data_index].count_zeros() {
                     // There is at least one zero afterwards.
                     let leftmost_zero_index_after = self.data[data_index]
                         .select_zero(zero_rank)

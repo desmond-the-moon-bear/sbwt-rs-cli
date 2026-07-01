@@ -333,7 +333,7 @@ impl PnsvTuned {
         let ranges_upper_bound = ranges.max_target();
 
         let log_4 = (usize::BITS - count.leading_zeros()).div_ceil(2) as usize;
-        let mut matrix_upper_bound = log_4 - TARGET_LENGTH_LOG_4_FLOOR; 
+        let mut matrix_upper_bound = log_4.saturating_sub(TARGET_LENGTH_LOG_4_FLOOR);
         matrix_upper_bound = matrix_upper_bound.min(ranges_upper_bound + 1 + matrix::MAX_ROWS);
         matrix_upper_bound = matrix_upper_bound.min(max_k);
         
