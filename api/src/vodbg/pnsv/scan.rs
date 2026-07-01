@@ -1,5 +1,6 @@
 // Code by Martin Kostadinov.
 
+use simple_sds_sbwt::serialize::Serialize;
 use super::bp::nearest_neighbor_dictionary::NearestNeighbourDictionary as NND;
 use super::Pnsv;
 
@@ -14,6 +15,7 @@ pub struct LcsSimd {
 impl LcsSimd {
     const ZERO: [u8; Word::LANES as usize] = [0; Word::LANES as usize];
     pub const LANES: usize = Word::LANES as usize;
+    pub const BYTES_PER_ELEMENT: usize = (Word::BITS as u32 / u8::BITS) as usize / Self::LANES;
 
     pub fn from_iterator<T, I>(input: I, n: usize) -> Self
     where
@@ -176,6 +178,40 @@ impl LcsSimd {
         }
 
         Err(upper_bound_word_index * Self::LANES - 1)
+    }
+
+    pub fn serialize<W: std::io::Write>(&self, out: &mut W) -> std::io::Result<usize> {
+        let mut written: usize = 0;
+        out.write_all(&(self.n as u64).to_le_bytes())?;
+        written += size_of::<u64>();
+        for word in &self.words {
+            for element in word.to_array() {
+                out.write_all(&element.to_le_bytes())?;
+            }
+        }
+        written += self.words.len() * Self::LANES * Self::BYTES_PER_ELEMENT;
+        Ok(written)
+    }
+
+    pub fn load<R: std::io::Read>(input: &mut R) -> std::io::Result<Self> {
+        let n = u64::from_le(u64::load(input)?) as usize;
+        #[allow(clippy::manual_div_ceil)]
+        let word_count = (n + Self::LANES - 1) / Self::LANES;
+        let mut words: Vec<Word> = Vec::with_capacity(word_count);
+        let mut array = Self::ZERO;
+        let mut bytes = [0; Self::BYTES_PER_ELEMENT];
+        for _ in 0..word_count {
+            for i in 0..Self::LANES {
+                input.read_exact(&mut bytes)?;
+                array[i] = u8::from_le_bytes(bytes);
+            }
+            words.push(Word::new(array));
+        }
+        let result = Self {
+            words,
+            n
+        };
+        Ok(result)
     }
 
     #[inline]
@@ -452,6 +488,19 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lcs_simd_serialize_and_load() {
+        let items: &[u8] = &[
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+            24, 25, 26, 27, 28, 29, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
+        ];
+        let lcs_simd = LcsSimd::from_iterator(items.iter().cloned(), items.len());
+        let mut buffer = Vec::<u8>::new();
+        lcs_simd.serialize(&mut buffer).unwrap();
+        let lcs_simd_loaded = LcsSimd::load(&mut buffer.as_slice()).unwrap();
+        assert_eq!(lcs_simd, lcs_simd_loaded);
+    }
 
     #[test]
     fn lcs_simd_words_are_correct() {

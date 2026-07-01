@@ -3,6 +3,7 @@
 use simple_sds_sbwt::bit_vector::BitVector;
 use simple_sds_sbwt::ops::{BitVec, Rank, Select, SelectZero};
 use simple_sds_sbwt::raw_vector::{PushRaw, RawVector};
+use simple_sds_sbwt::serialize::Serialize;
 
 use std::collections::vec_deque::VecDeque;
 use std::cell::RefCell;
@@ -19,6 +20,8 @@ pub struct WindowedWaveletTree {
     pub data: Vec<BitVector>,
     /// In order to keep the semantics that the Pnsv structures answer their queries under an
     /// immutable reference, this buffer has to be under a RefCell.
+    // note(mk): Without synchronisation primitives using RefCell makes the previous/next methods
+    // non-atomic, however.
     buffer: RefCell<Vec<(usize, usize)>>,
 }
 
@@ -55,52 +58,8 @@ impl WindowedWaveletTree {
         T: Into<usize>,
         I: Iterator<Item = T> + Clone,
     {
-        let mut queue: VecDeque<(usize, usize, usize)> = VecDeque::new();
         let mut tree: Vec<Node> = vec![];
-        let mut data_index: usize = 0;
-
-        queue.push_back((0, lower_bound, window_size));
-
-        // Create the nodes based on the lower bound and the window size.
-        while !queue.is_empty() {
-            let current_node_index = tree.len();
-            let (parent, lower_bound, window_size) = queue.pop_front().unwrap();
-
-            let right_child_window_size = window_size >> 1;
-            let left_child_window_size = window_size - right_child_window_size;
-
-            let mut left_child = 0;
-            let mut right_child = 0;
-
-            // Add 1 for the node that will be pushed now.
-            let mut last_node_index = tree.len() + queue.len() + 1;
-            if left_child_window_size > 1 {
-                left_child = last_node_index;
-                last_node_index += 1;
-                queue.push_back((current_node_index, lower_bound, left_child_window_size));
-            }
-
-            if right_child_window_size > 1 {
-                right_child = last_node_index;
-                queue.push_back((
-                    current_node_index,
-                    lower_bound + left_child_window_size,
-                    right_child_window_size,
-                ));
-            }
-
-            let data = data_index;
-            data_index += 1;
-
-            tree.push(Node {
-                parent,
-                lower_bound,
-                window_size,
-                left_child,
-                right_child,
-                data,
-            });
-        }
+        Self::make_tree_nodes(&mut tree, lower_bound, window_size);
 
         let ten_percent = count / 10;
         let mut border = ten_percent;
@@ -204,6 +163,54 @@ impl WindowedWaveletTree {
             tree,
             data,
             buffer: RefCell::new(vec![]),
+        }
+    }
+
+    fn make_tree_nodes(tree: &mut Vec<Node>, lower_bound: usize, window_size: usize) {
+        let mut queue: VecDeque<(usize, usize, usize)> = VecDeque::new();
+        let mut data_index: usize = 0;
+
+        queue.push_back((0, lower_bound, window_size));
+
+        // Create the nodes based on the lower bound and the window size.
+        while !queue.is_empty() {
+            let current_node_index = tree.len();
+            let (parent, lower_bound, window_size) = queue.pop_front().unwrap();
+
+            let right_child_window_size = window_size >> 1;
+            let left_child_window_size = window_size - right_child_window_size;
+
+            let mut left_child = 0;
+            let mut right_child = 0;
+
+            // Add 1 for the node that will be pushed now.
+            let mut last_node_index = tree.len() + queue.len() + 1;
+            if left_child_window_size > 1 {
+                left_child = last_node_index;
+                last_node_index += 1;
+                queue.push_back((current_node_index, lower_bound, left_child_window_size));
+            }
+
+            if right_child_window_size > 1 {
+                right_child = last_node_index;
+                queue.push_back((
+                    current_node_index,
+                    lower_bound + left_child_window_size,
+                    right_child_window_size,
+                ));
+            }
+
+            let data = data_index;
+            data_index += 1;
+
+            tree.push(Node {
+                parent,
+                lower_bound,
+                window_size,
+                left_child,
+                right_child,
+                data,
+            });
         }
     }
 
@@ -436,6 +443,46 @@ impl WindowedWaveletTree {
         index_in_node
     }
 
+    pub fn serialize<W: std::io::Write>(&self, out: &mut W) -> std::io::Result<usize> {
+        let mut written: usize = 0;
+
+        out.write_all(&(self.lower_bound as u64).to_le_bytes())?;
+        out.write_all(&(self.window_size as u64).to_le_bytes())?;
+        let tree_size = self.tree.len();
+        assert_eq!(tree_size, self.data.len());
+        out.write_all(&(tree_size as u64).to_le_bytes())?;
+        written += 3 * size_of::<u64>();
+
+        for data in &self.data {
+            data.serialize(out)?;
+            written += data.size_in_bytes();
+        }
+
+        Ok(written)
+    }
+
+    pub fn load<R: std::io::Read>(input: &mut R) -> std::io::Result<Self> {
+        let lower_bound = u64::from_le(u64::load(input)?) as usize;
+        let window_size = u64::from_le(u64::load(input)?) as usize;
+        let tree_size = u64::from_le(u64::load(input)?) as usize;
+        let mut tree: Vec<Node> = vec![];
+        Self::make_tree_nodes(&mut tree, lower_bound, window_size);
+        assert_eq!(tree_size, tree.len());
+        let mut data = Vec::<BitVector>::with_capacity(tree_size);
+        for _ in 0..tree_size {
+            let row = BitVector::load(input)?;
+            data.push(row);
+        }
+        let result = Self {
+            lower_bound,
+            window_size,
+            tree,
+            data,
+            buffer: RefCell::new(vec![]),
+        };
+        Ok(result)
+    }
+
     #[inline]
     pub fn len(&self) -> usize {
         if self.is_empty() {
@@ -471,6 +518,22 @@ impl super::Pnsv for WindowedWaveletTree {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn serialize_and_load() {
+        let items: &[usize] = &[
+            2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7, 8, 8, 8, 8, 9, 9, 9, 9,
+            9, 9, 9, 9, 8, 8, 8, 8, 7, 7, 7, 7, 6, 6, 6, 6, 5, 5, 5, 5, 4, 4, 4, 4, 3, 3, 3, 3, 2, 2, 2, 2,
+        ];
+        let lower_bound = 3;
+        let window_size = 6;
+        let wavelet = WindowedWaveletTree::from_iterator(items.iter().cloned(), items.len(), lower_bound, window_size);
+
+        let mut buffer = Vec::<u8>::new();
+        wavelet.serialize(&mut buffer).unwrap();
+        let wavelet_loaded = WindowedWaveletTree::load(&mut buffer.as_slice()).unwrap();
+        assert_eq!(wavelet_loaded, wavelet);
+    }
 
     fn previous(items: &[usize], index: usize, target_length: usize, lower_bound: usize, upper_bound: usize) -> usize {
         for i in (0..=index).rev() {

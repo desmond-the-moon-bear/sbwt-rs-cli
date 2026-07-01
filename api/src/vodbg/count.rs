@@ -6,7 +6,7 @@ pub struct Counts {
     pub sampled_counts: Vec<u64>,
     pub large_counts_up_to_sample: Vec<usize>,
     pub large_counts: Vec<u64>,
-    pub prefix_counts_for_same_letter_sequence: Vec<Vec<u64>>,
+    // pub prefix_counts_for_same_letter_sequence: Vec<Vec<u64>>,
 }
 
 impl Counts {
@@ -28,8 +28,6 @@ impl Counts {
         E: ExtendRight,
         C: ContractLeft,
     {
-        todo!("Fix this...");
-
         let mut individual_counts: Vec<u8> = vec![0; streaming_index.n];
         let number_of_samples = streaming_index.n / sample_distance + 1;
         let mut large_counts_up_to_sample: Vec<usize> = vec![0; number_of_samples];
@@ -84,7 +82,7 @@ impl Counts {
             sampled_counts,
             large_counts_up_to_sample,
             large_counts,
-            prefix_counts_for_same_letter_sequence: vec![],
+            // prefix_counts_for_same_letter_sequence: vec![],
         }
     }
 
@@ -136,36 +134,34 @@ mod tests {
         use rand_chacha::rand_core::SeedableRng;
         use rand_chacha::rand_core::RngCore;
 
-        todo!("Fix this...");
-
         let max_k: usize = 16;
         let kmer_count = 256;
         let mut rng = ChaCha20Rng::from_seed([35; 32]);
 
         let mut seqs = Vec::<Vec<u8>>::new();
-        // for _ in 0..kmer_count {
-        //     let kmer: Vec<u8> = (0..max_k).map(|_| match rng.next_u32() % 4 {
-        //         0 => b'A',
-        //         1 => b'C',
-        //         2 => b'G',
-        //         _ => b'T',
-        //     }).collect();
-        //     seqs.push(kmer);
-        // }
-        //
-        // seqs.push(b"AAAAAAAAAAAAAAAAAA!AAAAAAAAAAA".to_vec());
-        // seqs.push(b"AAAAAAAA!CCCCCCCCCCCCC!AAAAAAA".to_vec());
+        for _ in 0..kmer_count {
+            let kmer: Vec<u8> = (0..max_k).map(|_| match rng.next_u32() % 4 {
+                0 => b'A',
+                1 => b'C',
+                2 => b'G',
+                _ => b'T',
+            }).collect();
+            seqs.push(kmer);
+        }
 
-        let max_k = 4;
-        seqs.push(b"AAAC".to_vec());
+        seqs.push(b"AAAAAAAAAAAAAAAAAA!AAAAAAAAAAA".to_vec());
+        seqs.push(b"AAAAAAAA!CCCCCCCCCCCCC!AAAAAAA".to_vec());
+
+        // let max_k = 4;
+        // seqs.push(b"A!CAAA".to_vec());
+        // seqs.push(b"AAAACAAAACAAAACAAAA".to_vec());
 
         seqs.sort();
         seqs.dedup();
 
-        // println!("{:#?}", seqs.iter().map(|seq| String::from_utf8(seq.clone()).unwrap()).collect::<Vec<_>>());
-
         let (sbwt, lcs) = SbwtIndexBuilder::<BitPackedKmerSortingMem>::new()
             .k(max_k).build_lcs(true)
+            .add_all_dummy_paths(true)
             .build_select_support(true)
             .run_from_vecs(&seqs);
         let lcs = lcs.unwrap();
@@ -214,8 +210,6 @@ mod tests {
                 assert_eq!(true_count, range_count);
             }
         }
-
-        panic!();
     }
 }
 
