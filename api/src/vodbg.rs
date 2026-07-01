@@ -42,16 +42,16 @@ pub struct Node {
     pub k: usize,
     // Limit the construction of this structure to this module.
     // note(mk): Think about whether this really is a good idea...
-    _phantom: std::marker::PhantomData<()>,
+    // _phantom: std::marker::PhantomData<()>,
 }
 
 #[inline]
-fn new_node(start: usize, end: usize, k: usize) -> Node {
+pub fn new_node(start: usize, end: usize, k: usize) -> Node {
     Node {
         start,
         end,
         k,
-        _phantom: Default::default(),
+        // _phantom: Default::default(),
     }
 }
 

@@ -152,10 +152,6 @@ mod tests {
         seqs.push(b"AAAAAAAAAAAAAAAAAA!AAAAAAAAAAA".to_vec());
         seqs.push(b"AAAAAAAA!CCCCCCCCCCCCC!AAAAAAA".to_vec());
 
-        // let max_k = 4;
-        // seqs.push(b"A!CAAA".to_vec());
-        // seqs.push(b"AAAACAAAACAAAACAAAA".to_vec());
-
         seqs.sort();
         seqs.dedup();
 
@@ -178,14 +174,6 @@ mod tests {
 
         let counts = Counts::new_with_default_values(sequence_stream, streaming_index);
         let vodbg = vodbg::VoDbg::new(&sbwt, &pnsv_tuned);
-
-        println!("{}", sbwt.n_sets());
-        for i in 0..sbwt.n_sets() {
-            let node = vodbg::new_node(i, i+1, max_k);
-            let kmer = vodbg.get_kmer(node);
-            let kmer_str = str::from_utf8(&kmer).unwrap();
-            println!("{} {} {}", node.start, kmer_str, counts.individual_counts[i]);
-        }
 
         for current_k in 1..=max_k {
             for node in vodbg::iter::node_iterator_with_k(&vodbg, current_k) {
