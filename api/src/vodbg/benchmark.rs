@@ -23,15 +23,10 @@ pub fn read_index_and_lcs(arguments_start: usize) -> (SbwtIndexVariant, LcsArray
     (index, lcs)
 }
 
-pub fn read_query(arguments_start: usize) -> Vec<Vec<u8>> {
+pub fn read_sequences<R: std::io::BufRead + 'static + Send + Sync>(reader: R) -> Vec<Vec<u8>> {
     use crate::SeqStream;
-
-    let mut args = std::env::args().skip(arguments_start);
-    let query_path = args.next().expect("expected query path");
-    let query_file = std::fs::File::open(query_path).unwrap();
-    let buf_reader = std::io::BufReader::new(query_file);
     let mut stream = crate::JSeqIOSeqStreamWrapper {
-        inner: jseqio::reader::DynamicFastXReader::new(buf_reader).unwrap(),
+        inner: jseqio::reader::DynamicFastXReader::new(reader).unwrap(),
     };
     let mut result: Vec<Vec<u8>> = vec![];
     while let Some(sequence) = stream.stream_next() {

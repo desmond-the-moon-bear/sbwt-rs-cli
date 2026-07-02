@@ -1,28 +1,37 @@
 use crate::{ContractLeft, ExtendRight, SeqStream, StreamingIndex};
 
+use super::DummyInfo;
+
 pub struct Counts {
     pub individual_counts: Vec<u8>,
     pub sample_distance: usize,
     pub sampled_counts: Vec<u64>,
     pub large_counts_up_to_sample: Vec<usize>,
     pub large_counts: Vec<u64>,
-    // pub prefix_counts_for_same_letter_sequence: Vec<Vec<u64>>,
 }
 
 impl Counts {
     pub const DEFAULT_SAMPLE_DISTANCE: usize = 16;
 
-    pub fn new_with_default_values<SS, E, C>(sequence_stream: SS, streaming_index: StreamingIndex<'_, E, C>) -> Self
+    pub fn try_new_with_default_values<SS, E, C>(
+        sequence_stream: SS,
+        streaming_index: StreamingIndex<'_, E, C>,
+        dummy_info: &impl DummyInfo
+    ) -> Option<Self>
     where 
         SS: SeqStream + Send,
         E: ExtendRight,
         C: ContractLeft,
     {
-        Self::new(sequence_stream, streaming_index, Self::DEFAULT_SAMPLE_DISTANCE)
+        Self::try_new(sequence_stream, streaming_index, dummy_info, Self::DEFAULT_SAMPLE_DISTANCE)
     }
 
-
-    pub fn new<SS, E, C>(mut sequence_stream: SS, streaming_index: StreamingIndex<'_, E, C>, sample_distance: usize) -> Self
+    pub fn try_new<SS, E, C>(
+        mut sequence_stream: SS,
+        streaming_index: StreamingIndex<'_, E, C>,
+        dummy_info: &impl DummyInfo,
+        sample_distance: usize
+    ) -> Option<Self>
     where 
         SS: SeqStream + Send,
         E: ExtendRight,
@@ -42,8 +51,14 @@ impl Counts {
                 }
 
                 let representative = range.start;
-                let sample = representative / sample_distance + 1;
 
+                let sbwt_was_not_built_with_all_dummies = length < streaming_index.k
+                    && (!dummy_info.is_dummy(representative) || dummy_info.get_dummy_length(representative) != length);
+                if sbwt_was_not_built_with_all_dummies {
+                    return None;
+                }
+
+                let sample = representative / sample_distance + 1;
                 if individual_counts[representative] == u8::MAX - 1 {
                     large_counts_up_to_sample[sample] += 1;
                     large_counts.insert(representative, 0);
@@ -76,14 +91,15 @@ impl Counts {
         // of the extra sum for the corresponding item in the array without the need of the key.
         let large_counts: Vec<u64> = large_counts.into_values().collect();
 
-        Self {
+        let result = Self {
             individual_counts,
             sample_distance,
             sampled_counts,
             large_counts_up_to_sample,
             large_counts,
-            // prefix_counts_for_same_letter_sequence: vec![],
-        }
+        };
+
+        Some(result)
     }
 
     pub fn range_sum(&self, start: usize, end: usize) -> u64 {
@@ -116,16 +132,34 @@ mod tests {
     use crate::vodbg;
     use crate::vodbg::pnsv::PnsvTuned;
 
-    fn count(input: &[Vec<u8>], sequence: &[u8]) -> u64 {
-        let mut count = 0;
-        for input_sequence in input {
-            for window in input_sequence.windows(sequence.len()) {
-                if window == sequence {
-                    count += 1;
-                }
-            }
-        }
-        count
+    #[test]
+    fn sbwt_was_not_built_with_all_dummies() {
+        let max_k: usize = 4;
+        let seqs: Vec<Vec<u8>> = vec![
+            b"AAAAAAAA".to_vec(),
+            b"ACACACAC".to_vec(),
+            b"ACGTACGT".to_vec()
+        ];
+
+        let (sbwt, lcs) = SbwtIndexBuilder::<BitPackedKmerSortingMem>::new()
+            .k(max_k).build_lcs(true)
+            .build_select_support(true)
+            .run_from_vecs(&seqs);
+        let lcs = lcs.unwrap();
+
+        let pnsv_tuned = PnsvTuned::new_with_default_values(&sbwt, &lcs, max_k);
+
+        let sequence_stream = crate::util::VecSeqStream::new(&seqs);
+        let streaming_index = StreamingIndex {
+            extend_right: &sbwt,
+            contract_left: &pnsv_tuned,
+            n: sbwt.n_sets(),
+            k: max_k,
+        };
+
+        let vodbg = vodbg::VoDbg::new(&sbwt, &pnsv_tuned);
+        let counts = Counts::try_new_with_default_values(sequence_stream, streaming_index, &vodbg);
+        assert!(counts.is_none())
     }
 
     #[test]
@@ -172,32 +206,29 @@ mod tests {
             k: max_k,
         };
 
-        let counts = Counts::new_with_default_values(sequence_stream, streaming_index);
         let vodbg = vodbg::VoDbg::new(&sbwt, &pnsv_tuned);
+        let counts = Counts::try_new_with_default_values(sequence_stream, streaming_index, &vodbg).unwrap();
 
         for current_k in 1..=max_k {
             for node in vodbg::iter::node_iterator_with_k(&vodbg, current_k) {
                 let kmer = vodbg.get_kmer(node);
-                let kmer_str = str::from_utf8(&kmer).unwrap();
                 let true_count = count(&seqs, &kmer);
                 let range_count = counts.range_sum(node.start, node.end);
-
-                if true_count != range_count {
-                    println!("{}", kmer_str);
-                    let mut it = node;
-                    it.k = max_k;
-                    it.end += 1;
-                    while it.start < it.end {
-                        let kmer = vodbg.get_kmer(it);
-                        let kmer_str = str::from_utf8(&kmer).unwrap();
-                        println!("{} {} {}", it.start, kmer_str, counts.individual_counts[it.start]);
-                        it.start += 1;
-                    }
-                }
-
                 assert_eq!(true_count, range_count);
             }
         }
+    }
+
+    fn count(input: &[Vec<u8>], sequence: &[u8]) -> u64 {
+        let mut count = 0;
+        for input_sequence in input {
+            for window in input_sequence.windows(sequence.len()) {
+                if window == sequence {
+                    count += 1;
+                }
+            }
+        }
+        count
     }
 }
 

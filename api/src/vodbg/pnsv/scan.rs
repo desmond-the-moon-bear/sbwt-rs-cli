@@ -237,58 +237,6 @@ impl Pnsv for LcsSimd {
     }
 }
 
-pub struct ScanWithFallback<P: Pnsv> {
-    pub simd: LcsSimd,
-    pub scan_word_bound: usize,
-    pub fallback: P,
-}
-
-impl<P: Pnsv> ScanWithFallback<P> {
-    pub const SCAN_WITH_FALLBACK_RANGE: usize = 2;
-
-    pub fn new(simd: LcsSimd, scan_word_bound: usize, fallback: P) -> Self {
-        Self { simd, scan_word_bound, fallback }
-    }
-}
-
-impl<P: Pnsv> Pnsv for ScanWithFallback<P> {
-    fn previous(&self, index: usize, target_length: usize) -> usize {
-        if target_length > self.fallback.max_target() {
-            return self.simd.scan_left(index, target_length as u8);
-        }
-        if target_length < self.fallback.max_target() - Self::SCAN_WITH_FALLBACK_RANGE {
-            return self.fallback.previous(index, target_length);
-        }
-        let result = self.simd.scan_left_bounded(index, target_length as u8, self.scan_word_bound);
-        match result {
-            Ok(index) => index,
-            Err(continue_search_index) => {
-                self.fallback.previous(continue_search_index, target_length)
-            }
-        }
-    }
-
-    fn next(&self, index: usize, target_length: usize) -> usize {
-        if target_length > self.fallback.max_target() {
-            return self.simd.scan_right(index, target_length as u8);
-        }
-        if target_length < self.fallback.max_target() - Self::SCAN_WITH_FALLBACK_RANGE {
-            return self.fallback.next(index, target_length);
-        }
-        let result = self.simd.scan_right_bounded(index, target_length as u8, self.scan_word_bound);
-        match result {
-            Ok(index) => index,
-            Err(continue_search_index) => {
-                self.fallback.next(continue_search_index, target_length)
-            }
-        }
-    }
-
-    fn max_target(&self) -> usize {
-        self.fallback.max_target()
-    }
-}
-
 /// Performs a bounded SIMD scan to find a previous/next smaller value. If the scan fails it falls
 /// back to a NND on a bitvector which marks the first and last values which are smaller than a
 /// given target length in each region determined by a SIMD word.

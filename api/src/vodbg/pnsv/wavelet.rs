@@ -453,7 +453,8 @@ impl WindowedWaveletTree {
         out.write_all(&(tree_size as u64).to_le_bytes())?;
         written += 3 * size_of::<u64>();
 
-        for data in &self.data {
+        for (index, data) in self.data.iter().enumerate() {
+            log::info!("[WWT::serialize] serializing node data {}...", index);
             data.serialize(out)?;
             written += data.size_in_bytes();
         }
@@ -469,7 +470,8 @@ impl WindowedWaveletTree {
         Self::make_tree_nodes(&mut tree, lower_bound, window_size);
         assert_eq!(tree_size, tree.len());
         let mut data = Vec::<BitVector>::with_capacity(tree_size);
-        for _ in 0..tree_size {
+        for index in 0..tree_size {
+            log::info!("[WWT::load] loading node data {}...", index);
             let row = BitVector::load(input)?;
             data.push(row);
         }

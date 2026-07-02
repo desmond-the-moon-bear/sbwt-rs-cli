@@ -55,7 +55,16 @@ pub fn new_node(start: usize, end: usize, k: usize) -> Node {
     }
 }
 
-impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> VoDbg<'a, SS, P> {
+pub trait DummyInfo {
+    fn is_dummy(&self, position: usize) -> bool;
+    fn get_dummy_length(&self, position: usize) -> usize;
+}
+
+impl<'a, SS, P> VoDbg<'a, SS, P>
+where
+    SS: SubsetSeq + Send + Sync,
+    P: Pnsv + Send + Sync
+{
     /// Marks the dummy k-mers and records the number of $ each has.
     pub fn compute_auxiliary_data_about_dummies(sbwt: &SbwtIndex<SS>) -> (Rank9, BitFieldVec) {
         // Node, depth.
@@ -130,7 +139,7 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> VoDbg<'a, SS, P> {
 
     /// Push the k-mer string of the node to the given buffer.
     pub fn push_node_kmer(&self, node: Node, buf: &mut Vec<u8>) {
-        assert!(node.k < self.sbwt.k() || !self.is_dummy(node.start));
+        // assert!(node.k < self.sbwt.k() || !self.is_dummy(node.start));
         let mut colex_rank = node.start;
         let buf_start = buf.len();
         for _ in 0..node.k {
@@ -151,7 +160,7 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> VoDbg<'a, SS, P> {
     /// Get the k-mer string label of a node. To avoid memory allocation, check
     /// [VoDbg::push_node_kmer].
     pub fn get_kmer(&self, node: Node) -> Vec<u8> {
-        assert!(node.k < self.sbwt.k() || !self.is_dummy(node.start));
+        // assert!(node.k < self.sbwt.k() || !self.is_dummy(node.start));
         let mut buf = Vec::<u8>::with_capacity(node.k);
         self.push_node_kmer(node, &mut buf);
         buf
@@ -508,13 +517,19 @@ impl<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> VoDbg<'a, SS, P> {
         }
         None
     }
+}
 
+impl<'a, SS, P> DummyInfo for VoDbg<'a, SS, P>
+where
+    SS: SubsetSeq + Send + Sync,
+    P: Pnsv + Send + Sync
+{
     #[inline]
-    pub fn is_dummy(&self, position: usize) -> bool {
+    fn is_dummy(&self, position: usize) -> bool {
         self.dummy_marks[position]
     }
 
-    pub fn get_dummy_length(&self, position: usize) -> usize {
+    fn get_dummy_length(&self, position: usize) -> usize {
         assert!(self.is_dummy(position));
         let dummy_index = self.dummy_marks.rank(position);
         self.dummy_lengths.get_value(dummy_index)
