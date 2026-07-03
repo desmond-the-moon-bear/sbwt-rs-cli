@@ -50,7 +50,13 @@ impl Counts {
         let mut sample_information: Vec<Sample> = vec![Sample::default(); number_of_samples];
 
         // note(mk): Think about whether this is efficient enough...
-        let mut large_counts = std::collections::BTreeMap::<usize, u64>::new();
+        // note(mk): Check other hash maps and/or think for other solutions...
+        // let mut large_counts = std::collections::BTreeMap::<usize, u64>::new();
+        let mut large_counts = std::collections::HashMap::<usize, u64>::new();
+
+        let sequence_step = 5000;
+        let mut sequence_index: usize = 0;
+        let mut progress = 0;
 
         while let Some(sequence) = sequence_stream.stream_next() {
             for (length, range) in streaming_index.matching_statistics_iter(sequence) {
@@ -78,14 +84,23 @@ impl Counts {
                 } else {
                     individual_counts[representative] += 1;
                 }
-
+            }
+            sequence_index += 1;
+            if sequence_index > sequence_step {
+                sequence_index = 0;
+                progress += sequence_step;
+                log::info!("[Counts::new] progress ({}/?)...", progress);
             }
         }
 
         // The values are in the BTreeMap are sorted by key i.e. by index of the sum in the array.
         // Using the array large_counts_before_sample and while scanning we can find the position
         // of the extra sum for the corresponding item in the array without the need of the key.
-        let large_counts: Vec<u64> = large_counts.into_values().collect();
+        // let large_counts: Vec<u64> = large_counts.into_values().collect();
+
+        let mut pairs: Vec<_> = large_counts.into_iter().collect();
+        pairs.sort();
+        let large_counts: Vec<u64> = pairs.into_iter().map(|(_, count)| count).collect();
 
         let mut individual_index = 0;
         let mut large_count_index = 0;

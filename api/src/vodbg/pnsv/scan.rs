@@ -181,6 +181,7 @@ impl LcsSimd {
     }
 
     pub fn serialize<W: std::io::Write>(&self, out: &mut W) -> std::io::Result<usize> {
+        log::info!("[LcsSimd::load] serializing...");
         let mut written: usize = 0;
         out.write_all(&(self.n as u64).to_le_bytes())?;
         written += size_of::<u64>();
@@ -194,6 +195,7 @@ impl LcsSimd {
     }
 
     pub fn load<R: std::io::Read>(input: &mut R) -> std::io::Result<Self> {
+        log::info!("[LcsSimd::load] loading...");
         let n = u64::from_le(u64::load(input)?) as usize;
         #[allow(clippy::manual_div_ceil)]
         let word_count = (n + Self::LANES - 1) / Self::LANES;
