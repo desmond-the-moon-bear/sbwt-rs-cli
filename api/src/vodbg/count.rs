@@ -2,12 +2,20 @@ use crate::{ContractLeft, ExtendRight, SeqStream, StreamingIndex};
 
 use super::DummyInfo;
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Counts {
     pub individual_counts: Vec<u8>,
     pub sample_distance: usize,
-    pub sampled_counts: Vec<u64>,
-    pub large_counts_up_to_sample: Vec<usize>,
+    // Store the sample count and the number of large counts up to the sample interleaved to
+    // reduce the number of cache misses.
+    pub sample_information: Vec<Sample>,
     pub large_counts: Vec<u64>,
+}
+
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+pub struct Sample {
+    count: u64,
+    large_counts_up_to_sample: usize,
 }
 
 impl Counts {
@@ -39,7 +47,7 @@ impl Counts {
     {
         let mut individual_counts: Vec<u8> = vec![0; streaming_index.n];
         let number_of_samples = streaming_index.n / sample_distance + 1;
-        let mut large_counts_up_to_sample: Vec<usize> = vec![0; number_of_samples];
+        let mut sample_information: Vec<Sample> = vec![Sample::default(); number_of_samples];
 
         // note(mk): Think about whether this is efficient enough...
         let mut large_counts = std::collections::BTreeMap::<usize, u64>::new();
@@ -60,7 +68,7 @@ impl Counts {
 
                 let sample = representative / sample_distance + 1;
                 if individual_counts[representative] == u8::MAX - 1 {
-                    large_counts_up_to_sample[sample] += 1;
+                    sample_information[sample].large_counts_up_to_sample += 1;
                     large_counts.insert(representative, 0);
                 }
 
@@ -80,16 +88,15 @@ impl Counts {
         let large_counts: Vec<u64> = large_counts.into_values().collect();
 
         let mut individual_index = 0;
-        let mut sampled_counts: Vec<u64> = vec![0; number_of_samples];
         let mut large_count_index = 0;
         // The first sample is "before" the beginning of the array and will have a value of 0.
         for i in 1..number_of_samples {
-            sampled_counts[i] = sampled_counts[i - 1];
-            large_counts_up_to_sample[i] += large_counts_up_to_sample[i - 1];
+            sample_information[i].count = sample_information[i - 1].count;
+            sample_information[i].large_counts_up_to_sample += sample_information[i - 1].large_counts_up_to_sample;
             for _ in 0..sample_distance {
-                sampled_counts[i] += individual_counts[individual_index] as u64;
+                sample_information[i].count += individual_counts[individual_index] as u64;
                 if individual_counts[individual_index] == u8::MAX {
-                    sampled_counts[i] += large_counts[large_count_index];
+                    sample_information[i].count += large_counts[large_count_index];
                     large_count_index += 1;
                 }
                 individual_index += 1;
@@ -99,8 +106,7 @@ impl Counts {
         let result = Self {
             individual_counts,
             sample_distance,
-            sampled_counts,
-            large_counts_up_to_sample,
+            sample_information,
             large_counts,
         };
 
@@ -116,8 +122,8 @@ impl Counts {
     pub fn prefix_sum(&self, end: usize) -> u64 {
         let previous_sample = end / self.sample_distance;
         let mut scan_index = previous_sample * self.sample_distance;
-        let mut sum = self.sampled_counts[previous_sample];
-        let mut large_count_index = self.large_counts_up_to_sample[previous_sample];
+        let mut sum = self.sample_information[previous_sample].count;
+        let mut large_count_index = self.sample_information[previous_sample].large_counts_up_to_sample;
         while scan_index < end {
             sum += self.individual_counts[scan_index] as u64;
             if self.individual_counts[scan_index] == u8::MAX {
