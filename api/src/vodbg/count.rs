@@ -74,22 +74,27 @@ impl Counts {
             }
         }
 
+        // The values are in the BTreeMap are sorted by key i.e. by index of the sum in the array.
+        // Using the array large_counts_before_sample and while scanning we can find the position
+        // of the extra sum for the corresponding item in the array without the need of the key.
+        let large_counts: Vec<u64> = large_counts.into_values().collect();
+
         let mut individual_index = 0;
         let mut sampled_counts: Vec<u64> = vec![0; number_of_samples];
+        let mut large_count_index = 0;
         // The first sample is "before" the beginning of the array and will have a value of 0.
         for i in 1..number_of_samples {
             sampled_counts[i] = sampled_counts[i - 1];
             large_counts_up_to_sample[i] += large_counts_up_to_sample[i - 1];
             for _ in 0..sample_distance {
                 sampled_counts[i] += individual_counts[individual_index] as u64;
+                if individual_counts[individual_index] == u8::MAX {
+                    sampled_counts[i] += large_counts[large_count_index];
+                    large_count_index += 1;
+                }
                 individual_index += 1;
             }
         }
-
-        // The values are in the BTreeMap are sorted by key i.e. by index of the sum in the array.
-        // Using the array large_counts_before_sample and while scanning we can find the position
-        // of the extra sum for the corresponding item in the array without the need of the key.
-        let large_counts: Vec<u64> = large_counts.into_values().collect();
 
         let result = Self {
             individual_counts,
@@ -185,6 +190,7 @@ mod tests {
 
         seqs.push(b"AAAAAAAAAAAAAAAAAA!AAAAAAAAAAA".to_vec());
         seqs.push(b"AAAAAAAA!CCCCCCCCCCCCC!AAAAAAA".to_vec());
+        seqs.push(vec![b'A'; 1024]);
 
         seqs.sort();
         seqs.dedup();
