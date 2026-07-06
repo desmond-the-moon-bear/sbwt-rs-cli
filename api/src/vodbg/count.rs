@@ -143,6 +143,36 @@ impl Counts {
         }
         sum
     }
+
+    pub fn iter<'a>(&'a self) -> Iter<'a> {
+        Iter { index: 0, large_count_index: 0, counts: self }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Iter<'a> {
+    index: usize,
+    large_count_index: usize,
+    counts: &'a Counts,
+}
+
+impl Iterator for Iter<'_> {
+    type Item = u64;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index >= self.counts.individual_counts.len() {
+            return None;
+        }
+
+        let mut sum = self.counts.individual_counts[self.index] as u64;
+        self.index += 1;
+        if sum == u8::MAX as u64 {
+            sum += self.counts.large_counts[self.large_count_index];
+            self.large_count_index += 1;
+        }
+
+        Some(sum)
+    }
 }
 
 #[cfg(test)]
@@ -231,13 +261,27 @@ mod tests {
         let vodbg = vodbg::VoDbg::new(&sbwt, &pnsv_tuned);
         let counts = Counts::try_new_with_default_values(sequence_stream, streaming_index, &vodbg).unwrap();
 
-        for current_k in 1..=max_k {
+        for current_k in 1..max_k {
             for node in vodbg::iter::node_iterator_with_k(&vodbg, current_k) {
                 let kmer = vodbg.get_kmer(node);
                 let true_count = count(&seqs, &kmer);
                 let range_count = counts.range_sum(node.start, node.end);
                 assert_eq!(true_count, range_count);
             }
+        }
+
+        let mut counts_iter = counts.iter();
+        let mut count_from_iterator;
+        for node in vodbg::iter::node_iterator_with_k(&vodbg, max_k) {
+            let kmer = vodbg.get_kmer(node);
+            let true_count = count(&seqs, &kmer);
+            let range_count = counts.range_sum(node.start, node.end);
+            count_from_iterator = counts_iter.next().unwrap();
+            while counts_iter.index <= node.start {
+                count_from_iterator = counts_iter.next().unwrap();
+            }
+            assert_eq!(true_count, range_count);
+            assert_eq!(true_count, count_from_iterator);
         }
     }
 
