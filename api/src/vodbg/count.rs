@@ -49,10 +49,9 @@ impl Counts {
         let number_of_samples = streaming_index.n / sample_distance + 1;
         let mut sample_information: Vec<Sample> = vec![Sample::default(); number_of_samples];
 
-        // note(mk): Think about whether this is efficient enough...
         // note(mk): Check other hash maps and/or think for other solutions...
-        // let mut large_counts = std::collections::BTreeMap::<usize, u64>::new();
-        let mut large_counts = std::collections::HashMap::<usize, u64>::new();
+        // let mut large_counts = std::collections::HashMap::<usize, u64>::new();
+        let mut large_counts = ahash::AHashMap::<usize, u64>::new();
 
         let sequence_step = 5000;
         let mut sequence_index: usize = 0;
@@ -66,11 +65,11 @@ impl Counts {
 
                 let representative = range.start;
 
-                let sbwt_was_not_built_with_all_dummies = length < streaming_index.k
-                    && (!dummy_info.is_dummy(representative) || dummy_info.get_dummy_length(representative) != length);
-                if sbwt_was_not_built_with_all_dummies {
-                    return None;
-                }
+                // let sbwt_was_not_built_with_all_dummies = length < streaming_index.k
+                //     && (!dummy_info.is_dummy(representative) || dummy_info.get_dummy_length(representative) != length);
+                // if sbwt_was_not_built_with_all_dummies {
+                //     return None;
+                // }
 
                 let sample = representative / sample_distance + 1;
                 if individual_counts[representative] == u8::MAX - 1 {
@@ -92,11 +91,6 @@ impl Counts {
                 log::info!("[Counts::new] progress ({}/?)...", progress);
             }
         }
-
-        // The values are in the BTreeMap are sorted by key i.e. by index of the sum in the array.
-        // Using the array large_counts_before_sample and while scanning we can find the position
-        // of the extra sum for the corresponding item in the array without the need of the key.
-        // let large_counts: Vec<u64> = large_counts.into_values().collect();
 
         let mut pairs: Vec<_> = large_counts.into_iter().collect();
         pairs.sort();
@@ -212,6 +206,7 @@ mod tests {
         seqs.push(b"AAAAAAAAAAAAAAAAAA!AAAAAAAAAAA".to_vec());
         seqs.push(b"AAAAAAAA!CCCCCCCCCCCCC!AAAAAAA".to_vec());
         seqs.push(vec![b'A'; 1024]);
+        seqs.push(vec![b'C'; 1024]);
 
         seqs.sort();
         seqs.dedup();
