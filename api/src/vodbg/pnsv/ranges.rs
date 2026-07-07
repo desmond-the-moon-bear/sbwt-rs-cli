@@ -4,6 +4,8 @@ use super::Pnsv;
 use crate::util::DNA_ALPHABET;
 use crate::ExtendRight;
 
+use simple_sds_sbwt::serialize::Serialize;
+
 /// Precompute the ranges in the SBWT index for each suffix of length k up to a given number. Use
 /// those range borders to perform ContractLeft. Each level has at most O(4^k) border values.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -128,6 +130,37 @@ impl Ranges {
         }
         self.n
     }
+
+    pub fn serialize<W: std::io::Write>(&self, out: &mut W) -> std::io::Result<usize> {
+        let mut written: usize = 0;
+        out.write_all(&(self.n as u64).to_le_bytes())?;
+        let level_count = self.levels.len();
+        out.write_all(&(level_count as u64).to_le_bytes())?;
+        written += 2 * size_of::<u64>();
+
+        for (index, level) in self.levels.iter().enumerate() {
+            log::info!("[Ranges::serialize] serializing level {}...", index);
+            // note(mk): Think about serializing the levels element by element to ensure that each
+            // one takes 8 bytes i.e. the space for a u64.
+            level.serialize(out)?;
+            written += level.size_in_bytes();
+        }
+
+        Ok(written)
+    }
+
+    pub fn load<R: std::io::Read>(input: &mut R) -> std::io::Result<Self> {
+        let n = u64::from_le(u64::load(input)?) as usize;
+        let level_count = u64::from_le(u64::load(input)?) as usize;
+        let mut levels = vec![];
+        for i in 0..level_count {
+            log::info!("[Ranges::load] loading level {}...", i);
+            let level = Vec::<usize>::load(input)?;
+            levels.push(level);
+        }
+        let result = Self { levels, n };
+        Ok(result)
+    }
 }
 
 impl Pnsv for Ranges {
@@ -150,15 +183,13 @@ mod tests {
     use super::*;
     use crate::vodbg::pnsv::LcsSimd;
     use crate::{BitPackedKmerSortingMem, SbwtIndexBuilder};
+    use crate::{SbwtIndex, SubsetMatrix, LcsArray};
 
-    #[test]
-    fn randomised_kmers() {
+    fn setup(max_k: usize) -> (SbwtIndex<SubsetMatrix>, LcsArray) {
         use rand_chacha::ChaCha20Rng;
         use rand_chacha::rand_core::SeedableRng;
         use rand_chacha::rand_core::RngCore;
 
-        let min_k: usize = 3;
-        let max_k: usize = Ranges::MAX_K;
         let kmer_count = 1024;
         let mut rng = ChaCha20Rng::from_seed([53; 32]);
 
@@ -181,7 +212,26 @@ mod tests {
             .build_select_support(true)
             .run_from_vecs(seqs.as_slice());
 
-        let lcs = lcs.unwrap();
+        (sbwt, lcs.unwrap())
+    }
+
+    #[test]
+    fn serialize_and_load() {
+        let max_k: usize = Ranges::MAX_K;
+        let (sbwt, lcs) = setup(max_k);
+        let ranges = Ranges::new(&sbwt, lcs.len(), max_k);
+        let mut buffer = Vec::<u8>::new();
+        let written = ranges.serialize(&mut buffer).unwrap();
+        assert_eq!(buffer.len(), written);
+        let ranges_loaded = Ranges::load(&mut buffer.as_slice()).unwrap();
+        assert_eq!(ranges, ranges_loaded);
+    }
+
+    #[test]
+    fn randomised_kmers() {
+        let min_k: usize = 3;
+        let max_k: usize = Ranges::MAX_K;
+        let (sbwt, lcs) = setup(max_k);
         let iterator = (0..lcs.len()).map(|index| lcs.access(index) as u8);
         let lcs_simd = LcsSimd::from_iterator(iterator, lcs.len());
         let ranges = Ranges::new(&sbwt, lcs.len(), max_k);

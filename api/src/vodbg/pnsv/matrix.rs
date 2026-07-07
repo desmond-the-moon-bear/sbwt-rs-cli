@@ -5,6 +5,7 @@ use super::Pnsv;
 use simple_sds_sbwt::bit_vector::BitVector;
 use simple_sds_sbwt::ops::{BitVec, Rank, Select};
 use simple_sds_sbwt::raw_vector::{AccessRaw, RawVector};
+use simple_sds_sbwt::serialize::Serialize;
 
 pub const MAX_ROWS: usize = 12;
 
@@ -18,7 +19,6 @@ pub struct Matrix {
 }
 
 impl Matrix {
-
     pub fn empty() -> Self {
         Self {
             lower_bound: 0,
@@ -115,6 +115,44 @@ impl Matrix {
         self.rows[row_index].select(one_rank).unwrap()
     }
 
+    pub fn serialize<W: std::io::Write>(&self, out: &mut W) -> std::io::Result<usize> {
+        let mut written: usize = 0;
+        out.write_all(&(self.lower_bound as u64).to_le_bytes())?;
+        out.write_all(&(self.upper_bound as u64).to_le_bytes())?;
+        out.write_all(&(self.width as u64).to_le_bytes())?;
+        let row_count = self.rows.len();
+        out.write_all(&(row_count as u64).to_le_bytes())?;
+        written += 4 * size_of::<u64>();
+
+        for (index, row) in self.rows.iter().enumerate() {
+            log::info!("[Matrix::serialize] serializing row {}...", index);
+            row.serialize(out)?;
+            written += row.size_in_bytes();
+        }
+
+        Ok(written)
+    }
+
+    pub fn load<R: std::io::Read>(input: &mut R) -> std::io::Result<Self> {
+        let lower_bound = u64::from_le(u64::load(input)?) as usize;
+        let upper_bound = u64::from_le(u64::load(input)?) as usize;
+        let width = u64::from_le(u64::load(input)?) as usize;
+        let row_count = u64::from_le(u64::load(input)?) as usize;
+        let mut rows = vec![];
+        for i in 0..row_count {
+            log::info!("[Matrix::load] loading level {}...", i);
+            let row = BitVector::load(input)?;
+            rows.push(row);
+        }
+        let result = Self {
+            lower_bound,
+            upper_bound,
+            width,
+            rows
+        };
+        Ok(result)
+    }
+
     #[inline]
     pub fn len(&self) -> usize {
         self.width
@@ -145,6 +183,23 @@ impl Pnsv for Matrix {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn serialize_and_load() {
+        let items: &[usize] = &[
+            2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7, 8, 8, 8, 8, 9, 9, 9, 9,
+            9, 9, 9, 9, 8, 8, 8, 8, 7, 7, 7, 7, 6, 6, 6, 6, 5, 5, 5, 5, 4, 4, 4, 4, 3, 3, 3, 3, 2, 2, 2, 2,
+        ];
+        let lower_bound = 4;
+        let upper_bound = 6;
+        let matrix = Matrix::from_iterator(items.iter().cloned(), items.len(), lower_bound, upper_bound);
+        let mut buffer = Vec::<u8>::new();
+        let written = matrix.serialize(&mut buffer).unwrap();
+        assert_eq!(buffer.len(), written);
+        let matrix_loaded = Matrix::load(&mut buffer.as_slice()).unwrap();
+        assert_eq!(matrix, matrix_loaded);
+    }
+
 
     fn previous(items: &[usize], index: usize, target_length: usize, lower_bound: usize, upper_bound: usize) -> usize {
         for i in (0..=index).rev() {

@@ -447,7 +447,8 @@ mod tests {
         ];
         let lcs_simd = LcsSimd::from_iterator(items.iter().cloned(), items.len());
         let mut buffer = Vec::<u8>::new();
-        lcs_simd.serialize(&mut buffer).unwrap();
+        let written = lcs_simd.serialize(&mut buffer).unwrap();
+        assert_eq!(buffer.len(), written);
         let lcs_simd_loaded = LcsSimd::load(&mut buffer.as_slice()).unwrap();
         assert_eq!(lcs_simd, lcs_simd_loaded);
     }

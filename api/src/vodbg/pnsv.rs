@@ -20,6 +20,8 @@ pub use scan::AugmentedBoundedScan as ABS;
 pub use scan::LcsSimd;
 pub use wavelet::WindowedWaveletTree as WWT;
 
+use simple_sds_sbwt::serialize::Serialize;
+
 /// Previous/Next Smaller value.
 pub trait Pnsv {
     fn previous(&self, index: usize, target_length: usize) -> usize;
@@ -86,20 +88,6 @@ impl Pnsv for PnsvDynOwned {
 // Experimentally the scan is fastest if the average length of the ranges it searches is below
 // around 200 i.e. the target length. This value is equal to approx log_4(200).
 const TARGET_LENGTH_LOG_4_FLOOR: usize = 3;
-
-pub fn make_ranges(extend: &impl ExtendRight, count: usize, max_k: usize) -> Ranges {
-    let mut ranges_upper_bound = 0;
-    let mut bits_in_current_level_of_ranges = usize::BITS as usize * 4;
-    let mut total_bits = bits_in_current_level_of_ranges;
-    while total_bits < count {
-        ranges_upper_bound += 1;
-        bits_in_current_level_of_ranges *= 4;
-        total_bits += bits_in_current_level_of_ranges;
-    }
-    ranges_upper_bound = ranges_upper_bound.min(Ranges::MAX_K);
-    ranges_upper_bound = ranges_upper_bound.min(max_k);
-    Ranges::new(extend, count, ranges_upper_bound)
-}
 
 pub fn pnsv_abs_simd(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwned {
     let count = lcs.len();
@@ -204,6 +192,34 @@ impl PnsvTuned {
             fallback_scan_overlap,
         }
     }
+
+    pub fn serialize<W: std::io::Write>(&self, out: &mut W) -> std::io::Result<usize> {
+        let mut written = 0;
+        out.write_all(&(self.scan_bound as u64).to_le_bytes())?;
+        out.write_all(&(self.fallback_scan_overlap as u64).to_le_bytes())?;
+        written += 2 * size_of::<u64>();
+        written += self.ranges.serialize(out)?;
+        written += self.matrix.serialize(out)?;
+        written += self.lcs_simd.serialize(out)?;
+        Ok(written)
+    }
+
+    pub fn load<R: std::io::Read>(input: &mut R) -> std::io::Result<Self> {
+        let scan_bound = u64::from_le(u64::load(input)?) as usize;
+        let fallback_scan_overlap = u64::from_le(u64::load(input)?) as usize;
+        let ranges = Ranges::load(input)?;
+        let matrix = PnsvMatrix::load(input)?;
+        let lcs_simd = LcsSimd::load(input)?;
+        let result = Self {
+            ranges,
+            matrix,
+            lcs_simd,
+            scan_bound,
+            fallback_scan_overlap,
+        };
+        Ok(result)
+    }
+
 }
 
 impl Pnsv for PnsvTuned {
@@ -321,21 +337,19 @@ impl PnsvSafe {
         }
     }
 
-    pub fn serialize<W: std::io::Write>(&self, out: &mut W) -> std::io::Result<()> {
-        let scan_bound_bytes = (self.scan_bound as u64).to_le_bytes();
-        out.write_all(&scan_bound_bytes)?;
-        log::info!("[PnsvSafe::serialize] serializing windowed wavelet tree...");
-        self.wwt.serialize(out)?;
-        log::info!("[PnsvSafe::serialize] serializing lcs simd...");
-        self.lcs_simd.serialize(out)?;
-        Ok(())
+    pub fn serialize<W: std::io::Write>(&self, out: &mut W) -> std::io::Result<usize> {
+        let mut written = 0;
+        out.write_all(&(self.scan_bound as u64).to_le_bytes())?;
+        written += size_of::<u64>();
+        written += self.ranges.serialize(out)?;
+        written += self.wwt.serialize(out)?;
+        written += self.lcs_simd.serialize(out)?;
+        Ok(written)
     }
 
-    pub fn load<R: std::io::Read>(input: &mut R, extend: &impl ExtendRight, count: usize, max_k: usize) -> std::io::Result<Self> {
-        let ranges = make_ranges(extend, count, max_k);
-        let mut bytes = [0; (u64::BITS / u8::BITS) as usize];
-        input.read_exact(&mut bytes)?;
-        let scan_bound = u64::from_le_bytes(bytes) as usize;
+    pub fn load<R: std::io::Read>(input: &mut R) -> std::io::Result<Self> {
+        let scan_bound = u64::from_le(u64::load(input)?) as usize;
+        let ranges = Ranges::load(input)?;
         let wwt = WWT::load(input)?;
         let lcs_simd = LcsSimd::load(input)?;
         let result = Self {
@@ -346,7 +360,6 @@ impl PnsvSafe {
         };
         Ok(result)
     }
-
 }
 
 impl Pnsv for PnsvSafe {
@@ -385,7 +398,98 @@ impl Pnsv for PnsvSafe {
     }
 }
 
+pub fn make_ranges(extend: &impl ExtendRight, count: usize, max_k: usize) -> Ranges {
+    let mut ranges_upper_bound = 0;
+    let mut bits_in_current_level_of_ranges = usize::BITS as usize * 4;
+    let mut total_bits = bits_in_current_level_of_ranges;
+    while total_bits < count {
+        ranges_upper_bound += 1;
+        bits_in_current_level_of_ranges *= 4;
+        total_bits += bits_in_current_level_of_ranges;
+    }
+    ranges_upper_bound = ranges_upper_bound.min(Ranges::MAX_K);
+    ranges_upper_bound = ranges_upper_bound.min(max_k);
+    Ranges::new(extend, count, ranges_upper_bound)
+}
+
 #[cfg(test)]
 mod tests {
-    // todo(mk): test PnsvSafe...
+    use super::*;
+    use crate::{BitPackedKmerSortingMem, SbwtIndexBuilder};
+    use crate::{SbwtIndex, SubsetMatrix, LcsArray};
+
+    fn setup(kmer_count: usize, max_k: usize) -> (SbwtIndex<SubsetMatrix>, LcsArray) {
+        use rand_chacha::ChaCha20Rng;
+        use rand_chacha::rand_core::SeedableRng;
+        use rand_chacha::rand_core::RngCore;
+        let mut rng = ChaCha20Rng::from_seed([53; 32]);
+
+        let mut seqs = Vec::<Vec<u8>>::new();
+        for _ in 0..kmer_count {
+            let kmer: Vec<u8> = (0..max_k).map(|_| match rng.next_u32() % 4 {
+                0 => b'A',
+                1 => b'C',
+                2 => b'G',
+                _ => b'T',
+            }).collect();
+            seqs.push(kmer);
+        }
+
+        seqs.sort();
+        seqs.dedup();
+
+        let (sbwt, lcs) = SbwtIndexBuilder::<BitPackedKmerSortingMem>::new()
+            .k(max_k).build_lcs(true)
+            .build_select_support(true)
+            .run_from_vecs(seqs.as_slice());
+
+        (sbwt, lcs.unwrap())
+    }
+
+    #[test]
+    fn serialize_and_load_pnsv_safe() {
+        let kmer_count: usize = u16::MAX as usize;
+        let max_k: usize = 20;
+        let (sbwt, lcs) = setup(kmer_count, max_k);
+        let pnsv_safe = PnsvSafe::new(&sbwt, &lcs, max_k, 1);
+        let mut buffer = Vec::<u8>::new();
+        let written = pnsv_safe.serialize(&mut buffer).unwrap();
+        assert_eq!(buffer.len(), written);
+        let pnsv_safe_loaded = PnsvSafe::load(&mut buffer.as_slice()).unwrap();
+        assert_eq!(pnsv_safe, pnsv_safe_loaded);
+    }
+
+    #[test]
+    fn serialize_and_load_pnsv_tuned() {
+        let kmer_count: usize = u16::MAX as usize;
+        let max_k: usize = 20;
+        let (sbwt, lcs) = setup(kmer_count, max_k);
+        let pnsv_tuned = PnsvTuned::new_with_default_values(&sbwt, &lcs, max_k);
+        let mut buffer = Vec::<u8>::new();
+        let written = pnsv_tuned.serialize(&mut buffer).unwrap();
+        assert_eq!(buffer.len(), written);
+        let pnsv_tuned_loaded = PnsvTuned::load(&mut buffer.as_slice()).unwrap();
+        assert_eq!(pnsv_tuned, pnsv_tuned_loaded);
+    }
+
+    #[test]
+    fn randomised_kmers() {
+        let kmer_count: usize = u16::MAX as usize;
+        let min_k: usize = 3;
+        let max_k: usize = 8;
+        let (sbwt, lcs) = setup(kmer_count, max_k);
+        let pnsv_safe = PnsvSafe::new(&sbwt, &lcs, max_k, 1);
+        println!("pnsv_safe.ranges.max_target(): {}", pnsv_safe.ranges.max_target());
+        println!("pnsv_safe.wwt.max_target():    {}", pnsv_safe.wwt.max_target());
+        let pnsv_tuned = PnsvTuned::new_with_default_values(&sbwt, &lcs, max_k);
+        println!("pnsv_tuned.ranges.max_target(): {}", pnsv_tuned.ranges.max_target());
+        println!("pnsv_tuned.matrix.max_target(): {}", pnsv_tuned.matrix.max_target());
+        for target_length in min_k..=max_k {
+            for i in 0..lcs.len() {
+                assert_eq!(pnsv_safe.lcs_simd.previous(i, target_length), pnsv_safe.previous(i, target_length));
+                assert_eq!(pnsv_safe.lcs_simd.previous(i, target_length), pnsv_tuned.previous(i, target_length));
+            }
+        }
+    }
+
 }

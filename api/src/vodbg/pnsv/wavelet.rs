@@ -547,7 +547,8 @@ mod tests {
         let wavelet = WindowedWaveletTree::from_iterator(items.iter().cloned(), items.len(), lower_bound, window_size);
 
         let mut buffer = Vec::<u8>::new();
-        wavelet.serialize(&mut buffer).unwrap();
+        let written = wavelet.serialize(&mut buffer).unwrap();
+        assert_eq!(buffer.len(), written);
         let wavelet_loaded = WindowedWaveletTree::load(&mut buffer.as_slice()).unwrap();
         assert_eq!(wavelet_loaded, wavelet);
     }
