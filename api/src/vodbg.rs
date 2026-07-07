@@ -11,10 +11,11 @@ use crate::{ContractLeft, ExtendRight, SbwtIndex};
 use crate::subsetseq::SubsetSeq;
 use pnsv::Pnsv;
 
-use sux::bits::{BitVec, BitFieldVec};
-use sux::traits::{BitVecOpsMut, Rank};
-use sux::rank_sel::Rank9;
-use value_traits::slices::{SliceByValue, SliceByValueMut};
+use simple_sds_sbwt::bit_vector::BitVector;
+use simple_sds_sbwt::int_vector::IntVector;
+use simple_sds_sbwt::raw_vector::{AccessRaw, RawVector};
+use simple_sds_sbwt::ops::{BitVec, Rank, Access};
+
 
 pub mod count;
 pub mod iter;
@@ -27,12 +28,12 @@ pub struct VoDbg<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> {
     sbwt: &'a SbwtIndex<SS>,
     pnsv: &'a P,
     /// A bitvector which marks the dummy nodes in the SBWT.
-    dummy_marks: Rank9,
+    dummy_marks: BitVector,
     /// A packed integer array with the maximum length of a suffix of a dummy node which does not
     /// contain $ characters. These lengths appear in the same order as the marks in the
     /// [VoDbg::dummy_marks] bitvector and together with this packed integer array supports random
     /// access to these values given the position of a dummy node.
-    dummy_lengths: BitFieldVec,
+    dummy_lengths: IntVector,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
@@ -66,22 +67,22 @@ where
     P: Pnsv + Send + Sync
 {
     /// Marks the dummy k-mers and records the number of $ each has.
-    pub fn compute_auxiliary_data_about_dummies(sbwt: &SbwtIndex<SS>) -> (Rank9, BitFieldVec) {
+    pub fn compute_auxiliary_data_about_dummies(sbwt: &SbwtIndex<SS>) -> (BitVector, IntVector) {
         // Node, depth.
         let mut dfs_stack = Vec::<(usize, usize)>::new(); 
         let mut outlabels = Vec::<u8>::new();
 
         let mut dummy_count = 0;
-        let mut dummy_marks = BitVec::new(sbwt.n_sets());
+        let mut dummy_marks = RawVector::with_len(sbwt.n_sets(), false); // BitVec::new(sbwt.n_sets());
 
         // First pass to calculate the dummies.
         dfs_stack.push((0, 0)); // Colex rank of $, depth of $
         while let Some((node, depth)) = dfs_stack.pop() { 
-            if !dummy_marks[node] {
+            if !dummy_marks.bit(node) {
                 dummy_count += 1;
             }
 
-            dummy_marks.set(node, true);
+            dummy_marks.set_bit(node, true);
 
             if depth + 1 < sbwt.k() {
                 outlabels.clear();
@@ -93,20 +94,17 @@ where
             }
         }
         
-        let dummy_marks = Rank9::new(dummy_marks);
+        let mut dummy_marks = BitVector::from(dummy_marks);// Rank9::new(dummy_marks);
+        dummy_marks.enable_rank();
 
         let bit_width = (64 - sbwt.k().leading_zeros()) as usize;
-        let mut dummy_lengths = BitFieldVec::new(bit_width, dummy_count);
+        let mut dummy_lengths = IntVector::with_len(dummy_count, bit_width, 0).unwrap();
 
         // Second pass to calculate their depths now that we have their positions.
         dfs_stack.push((0, 0)); // Colex rank of $, depth of $
         while let Some((node, depth)) = dfs_stack.pop() { 
             let dummy_index = dummy_marks.rank(node);
-            
-            // note(mk): I had to introduce another dependency just to set a value at a given index
-            // in this packed array... This is extremely disappointing and perhaps I should just
-            // use a Vec<usize>.
-            dummy_lengths.set_value(dummy_index, depth);
+            dummy_lengths.set(dummy_index, depth as u64);
 
             if depth + 1 < sbwt.k() {
                 outlabels.clear();
@@ -526,14 +524,13 @@ where
 {
     #[inline]
     fn is_dummy(&self, position: usize) -> bool {
-        self.dummy_marks[position]
+        self.dummy_marks.get(position)
     }
 
     fn get_dummy_length(&self, position: usize) -> usize {
         assert!(self.is_dummy(position));
         let dummy_index = self.dummy_marks.rank(position);
-        self.dummy_lengths.get_value(dummy_index)
-            .expect("For each dummy there must be a corresponding length of its suffix.")
+        self.dummy_lengths.get(dummy_index) as usize
     }
 }
 

@@ -15,7 +15,6 @@ use crate::LcsArray;
 pub use balanced_parenthesis::LcsPnsvBp;
 pub use balanced_parenthesis::PnsvBp;
 pub use matrix::Matrix as PnsvMatrix;
-pub use matrix::MatrixSux as PnsvMatrixSux;
 pub use ranges::Ranges;
 pub use scan::AugmentedBoundedScan as ABS;
 pub use scan::LcsSimd;
@@ -42,22 +41,6 @@ impl<T: ?Sized + Pnsv> ContractLeft for T {
         let new_start = self.previous(I.start, target_len);
         let new_end = self.next(I.end, target_len);
         new_start..new_end
-    }
-}
-
-pub struct PnsvDyn<'a, const LEVELS: usize> {
-    pub structures: [&'a dyn Pnsv; LEVELS],
-}
-
-impl<'a, const LEVELS: usize> ContractLeft for PnsvDyn<'a, LEVELS> {
-    #[allow(non_snake_case)]
-    fn contract_left(&self, I: std::ops::Range<usize>, target_len: usize) -> std::ops::Range<usize> {
-        for i in 0..self.structures.len() - 1 {
-            if target_len <= self.structures[i].max_target() {
-                return self.structures[i].contract_left(I, target_len);
-            }
-        }
-        self.structures[self.structures.len() - 1].contract_left(I, target_len)
     }
 }
 
@@ -153,37 +136,10 @@ pub fn pnsv_abs_simd(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwned 
     }
 }
 
-pub fn average_range_lengths(lcs: &LcsArray, k: usize) -> Vec<usize> {
-    let count = lcs.len();
-    let mut range_counts = vec![1_usize; k];
-
-    let ten_percent = count / 10;
-    let mut border = ten_percent;
-    let mut percent_count = 0;
-
-    log::info!("[analyse_ranges] counting...");
-    for i in 1..lcs.len() {
-        let item = lcs.access(i);
-        #[allow(clippy::needless_range_loop)]
-        for target_length in 1..k {
-            if item < target_length {
-                range_counts[target_length] += 1;
-            }
-        }
-        if i > border {
-            percent_count += 1;
-            border += ten_percent;
-            log::info!("[analyse_ranges] scanning... {}0%", percent_count);
-        }
-    }
-
-    let count_f64 = count as f64;
-    range_counts.into_iter().map(|border_count| (count_f64 / border_count as f64) as usize).collect()
-}
-
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PnsvTuned {
     pub ranges: Ranges,
-    pub matrix: PnsvMatrixSux,
+    pub matrix: PnsvMatrix,
     pub lcs_simd: LcsSimd,
     pub scan_bound: usize,
     pub fallback_scan_overlap: usize,
@@ -220,7 +176,7 @@ impl PnsvTuned {
             if matrix_upper_bound > ranges_upper_bound {
                 s.spawn(|_| {
                     log::info!("[PnsvTuned::new] creating matrix...");
-                    let matrix = PnsvMatrixSux::from_iterator(matrix_iterator, count, ranges_upper_bound + 1, matrix_upper_bound);
+                    let matrix = PnsvMatrix::from_iterator(matrix_iterator, count, ranges_upper_bound + 1, matrix_upper_bound);
                     fallback_scan_overlap = fallback_scan_overlap.min(matrix.max_target());
                     matrix_option = Some(matrix);
                 });
@@ -234,7 +190,7 @@ impl PnsvTuned {
 
         let matrix = match matrix_option {
             Some(value) => value,
-            None => PnsvMatrixSux::empty(),
+            None => PnsvMatrix::empty(),
         };
         let lcs_simd = lcs_simd_option.expect("Creating lcs simd should not fail.");
 
@@ -300,6 +256,7 @@ impl Pnsv for PnsvTuned {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PnsvSafe {
     pub ranges: Ranges,
     pub wwt: WWT,

@@ -4,10 +4,9 @@ use crate::SubsetSeq;
 use super::VoDbg;
 use super::pnsv::Pnsv;
 
-use sux::bits::BitFieldVec;
-use sux::traits::Rank;
-use sux::rank_sel::Rank9;
-use value_traits::slices::SliceByValue;
+use simple_sds_sbwt::bit_vector::BitVector;
+use simple_sds_sbwt::int_vector::IntVector;
+use simple_sds_sbwt::ops::{Access, Rank, BitVec};
 
 pub fn node_iterator_with_k<'a, SS, P>(vodbg: &'a VoDbg<'a, SS, P>, k: usize) -> NodeIterator<'a, P>
 where 
@@ -30,8 +29,8 @@ pub struct NodeIterator<'a, P: Pnsv + Send + Sync> {
     end: usize,
     k: usize,
     pnsv: &'a P,
-    dummy_marks: &'a Rank9,
-    dummy_lengths: &'a BitFieldVec,
+    dummy_marks: &'a BitVector,
+    dummy_lengths: &'a IntVector,
 }
 
 impl<P> NodeIterator<'_, P>
@@ -53,13 +52,13 @@ where P: Pnsv + Send + Sync
             return None;
         }
 
-        if self.dummy_marks[self.start] {
+        if self.dummy_marks.get(self.start) {
             let mut dummy_index = self.dummy_marks.rank(self.start);
             loop {
                 let invalid_start =
                     self.start < self.end
-                    && self.dummy_marks[self.start]
-                    && self.dummy_lengths.get_value(dummy_index).expect("Dummy index should be valid.") < self.k;
+                    && self.dummy_marks.get(self.start)
+                    && (self.dummy_lengths.get(dummy_index) as usize) < self.k;
                 if !invalid_start {
                     break;
                 }

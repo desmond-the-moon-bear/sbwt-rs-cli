@@ -37,7 +37,7 @@ impl Counts {
     pub fn try_new<SS, E, C>(
         mut sequence_stream: SS,
         streaming_index: StreamingIndex<'_, E, C>,
-        dummy_info: &impl DummyInfo,
+        #[allow(unused)] dummy_info: &impl DummyInfo,
         sample_distance: usize
     ) -> Option<Self>
     where 

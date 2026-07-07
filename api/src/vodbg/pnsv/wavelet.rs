@@ -6,7 +6,6 @@ use simple_sds_sbwt::raw_vector::{PushRaw, RawVector};
 use simple_sds_sbwt::serialize::Serialize;
 
 use std::collections::vec_deque::VecDeque;
-use std::cell::RefCell;
 
 /// A wavelet tree over a continuous subset of the whole (ordered) alphabet. Supports previous
 /// smaller and next smaller value operations in log(n) time where n is the size of the subset.
@@ -18,11 +17,6 @@ pub struct WindowedWaveletTree {
     pub window_size: usize,
     pub tree: Vec<Node>,
     pub data: Vec<BitVector>,
-    /// In order to keep the semantics that the Pnsv structures answer their queries under an
-    /// immutable reference, this buffer has to be under a RefCell.
-    // note(mk): Without synchronisation primitives using RefCell makes the previous/next methods
-    // non-atomic, however.
-    buffer: RefCell<Vec<(usize, usize)>>,
 }
 
 /// A node in the wavelet tree. Contains indices for navigating the tree.
@@ -43,13 +37,14 @@ impl Node {
 }
 
 impl WindowedWaveletTree {
+    pub const STACK_SIZE: usize = 32;
+
     pub fn empty() -> Self {
         Self {
             lower_bound: 0,
             window_size: 0,
             tree: vec![],
             data: vec![],
-            buffer: RefCell::new(vec![]),
         }
     }
 
@@ -162,7 +157,6 @@ impl WindowedWaveletTree {
             window_size,
             tree,
             data,
-            buffer: RefCell::new(vec![]),
         }
     }
 
@@ -218,8 +212,8 @@ impl WindowedWaveletTree {
     /// length, returns that index.
     pub fn previous(&self, mut index: usize, target_length: usize) -> usize {
         let mut current_node = 0;
-        let mut candidate_stack = self.buffer.borrow_mut();
-        candidate_stack.clear();
+        let mut candidate_stack: [(usize, usize); Self::STACK_SIZE] = [(0, 0); Self::STACK_SIZE];
+        let mut candidate_count = 0;
 
         loop {
             if self.tree[current_node].lower_bound >= target_length {
@@ -228,7 +222,9 @@ impl WindowedWaveletTree {
 
             let max_value = self.tree[current_node].lower_bound + self.tree[current_node].window_size - 1;
             if max_value < target_length {
-                candidate_stack.push((current_node, index));
+                debug_assert!(candidate_count < Self::STACK_SIZE);
+                candidate_stack[candidate_count] = (current_node, index);
+                candidate_count += 1;
                 break;
             }
 
@@ -245,7 +241,9 @@ impl WindowedWaveletTree {
                 // Store the absolute position of the rightmost 0 up to the current index
                 // (inclusive).
                 if !is_one {
-                    candidate_stack.push((current_node, index));
+                    debug_assert!(candidate_count < Self::STACK_SIZE);
+                    candidate_stack[candidate_count] = (current_node, index);
+                    candidate_count += 1;
                     break;
                 }
                 if zero_rank > 0 {
@@ -254,7 +252,9 @@ impl WindowedWaveletTree {
                     let rightmost_zero_index_before = self.data[data_index]
                         .select_zero(zero_rank - 1)
                         .unwrap();
-                    candidate_stack.push((current_node, rightmost_zero_index_before));
+                    debug_assert!(candidate_count < Self::STACK_SIZE);
+                    candidate_stack[candidate_count] = (current_node, rightmost_zero_index_before);
+                    candidate_count += 1;
                 }
             }
 
@@ -307,8 +307,15 @@ impl WindowedWaveletTree {
             current_node = self.tree[current_node].right_child;
         }
 
-        let (mut result_node, mut result) = candidate_stack.pop().unwrap();
-        while let Some((current_node, index_in_node)) = candidate_stack.pop() {
+        if candidate_count == 0 {
+            return 0;
+        }
+
+        candidate_count -= 1;
+        let (mut result_node, mut result) = candidate_stack[candidate_count];
+        while candidate_count > 0 {
+            candidate_count -= 1;
+            let (current_node, index_in_node) = candidate_stack[candidate_count];
             result = self.climb(result_node, result, current_node);
             result_node = current_node;
             result = result.max(index_in_node);
@@ -321,8 +328,8 @@ impl WindowedWaveletTree {
     /// returns that index.
     pub fn next(&self, mut index: usize, target_length: usize) -> usize {
         let mut current_node = 0;
-        let mut candidate_stack = self.buffer.borrow_mut();
-        candidate_stack.clear();
+        let mut candidate_stack: [(usize, usize); Self::STACK_SIZE] = [(0, 0); Self::STACK_SIZE];
+        let mut candidate_count = 0;
 
         loop {
             if self.tree[current_node].lower_bound >= target_length {
@@ -331,7 +338,9 @@ impl WindowedWaveletTree {
 
             let max_value = self.tree[current_node].lower_bound + self.tree[current_node].window_size - 1;
             if max_value < target_length {
-                candidate_stack.push((current_node, index));
+                debug_assert!(candidate_count < Self::STACK_SIZE);
+                candidate_stack[candidate_count] = (current_node, index);
+                candidate_count += 1;
                 break;
             }
 
@@ -348,7 +357,9 @@ impl WindowedWaveletTree {
                 // Store the absolute position of the leftmost 0 after the current index
                 // (inclusive) if it is better than the previous solutions.
                 if !is_one {
-                    candidate_stack.push((current_node, index));
+                    debug_assert!(candidate_count < Self::STACK_SIZE);
+                    candidate_stack[candidate_count] = (current_node, index);
+                    candidate_count += 1;
                     break;
                 }
                 if zero_rank < self.data[data_index].count_zeros() {
@@ -356,7 +367,9 @@ impl WindowedWaveletTree {
                     let leftmost_zero_index_after = self.data[data_index]
                         .select_zero(zero_rank)
                         .unwrap();
-                    candidate_stack.push((current_node, leftmost_zero_index_after));
+                    debug_assert!(candidate_count < Self::STACK_SIZE);
+                    candidate_stack[candidate_count] = (current_node, leftmost_zero_index_after);
+                    candidate_count += 1;
                 }
             }
 
@@ -397,12 +410,15 @@ impl WindowedWaveletTree {
             current_node = self.tree[current_node].right_child;
         }
 
-        if candidate_stack.is_empty() {
+        if candidate_count == 0 {
             return self.len();
         }
 
-        let (mut result_node, mut result) = candidate_stack.pop().unwrap();
-        while let Some((current_node, index_in_node)) = candidate_stack.pop() {
+        candidate_count -= 1;
+        let (mut result_node, mut result) = candidate_stack[candidate_count];
+        while candidate_count > 0 {
+            candidate_count -= 1;
+            let (current_node, index_in_node) = candidate_stack[candidate_count];
             result = self.climb(result_node, result, current_node);
             result_node = current_node;
             result = result.min(index_in_node);
@@ -480,7 +496,6 @@ impl WindowedWaveletTree {
             window_size,
             tree,
             data,
-            buffer: RefCell::new(vec![]),
         };
         Ok(result)
     }

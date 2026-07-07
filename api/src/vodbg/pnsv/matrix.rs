@@ -18,6 +18,16 @@ pub struct Matrix {
 }
 
 impl Matrix {
+
+    pub fn empty() -> Self {
+        Self {
+            lower_bound: 0,
+            upper_bound: 0,
+            width: 0,
+            rows: vec![]
+        }
+    }
+
     pub fn from_iterator<T, I>(input: I, width: usize, lower_bound: usize, upper_bound: usize) -> Self
     where 
         T: Into<usize>,
@@ -117,148 +127,6 @@ impl Matrix {
 }
 
 impl Pnsv for Matrix {
-    #[inline]
-    fn previous(&self, index: usize, target_length: usize) -> usize {
-        self.previous(index, target_length)
-    }
-
-    #[inline]
-    fn next(&self, index: usize, target_length: usize) -> usize {
-        self.next(index, target_length)
-    }
-
-    fn max_target(&self) -> usize {
-        self.upper_bound
-    }
-}
-
-use sux::prelude::{Rank9, SelectAdapt, Rank as RankSux, Select as SelectSux, BitVec as BitVecSux}; // , BitCount as BitCountSux};
-use sux::traits::BitVecOpsMut as BitVecOpsMutSux;
-pub type RowSux = SelectAdapt<Rank9>;
-
-#[derive(Clone, Debug)]
-pub struct MatrixSux {
-    pub lower_bound: usize,
-    pub upper_bound: usize,
-    pub width: usize,
-    pub rows: Vec<RowSux>,
-    pub one_count: Vec<usize>,
-}
-
-impl MatrixSux {
-    pub fn empty() -> Self {
-        Self {
-            lower_bound: 0,
-            upper_bound: 0,
-            width: 0,
-            rows: vec![],
-            one_count: vec![],
-        }
-    }
-
-    pub fn from_iterator<T, I>(input: I, width: usize, lower_bound: usize, upper_bound: usize) -> Self
-    where 
-        T: Into<usize>,
-        I: Iterator<Item = T>,
-    {
-        let capacity = upper_bound - lower_bound + 1;
-        let mut rows_raw: Vec<BitVecSux> = Vec::with_capacity(capacity);
-        let mut one_count = vec![0_usize; capacity];
-
-        for _ in lower_bound..=upper_bound {
-            rows_raw.push(BitVecSux::new(width));
-        }
-
-        let ten_percent = width / 10;
-        let mut border = ten_percent;
-        let mut percent_count = 0;
-
-        for (index, item) in input.enumerate() {
-            let value = item.into();
-            for target_length in lower_bound..=upper_bound {
-                let row_index = target_length - lower_bound;
-                if value < target_length {
-                    rows_raw[row_index].set(index, true);
-                    one_count[row_index] += 1;
-                }
-            }
-            if index >= border {
-                border += ten_percent;
-                percent_count += 1;
-                log::info!("[MatrixSux::from_iterator] scanning... {}0%", percent_count);
-            }
-        }
- 
-        let mut rows: Vec<RowSux> = Vec::with_capacity(rows_raw.len());
-        for (index, row) in rows_raw.into_iter().enumerate() {
-            log::info!("[MatrixSux::from_iterator] building rank and select for row {}...", index);
-            let rank = Rank9::new(row);
-            let select = SelectAdapt::new(rank);
-            rows.push(select);
-        }
-
-        Self {
-            lower_bound,
-            upper_bound,
-            width,
-            rows,
-            one_count,
-        }
-    }
-
-    pub fn previous(&self, index: usize, target_length: usize) -> usize {
-        if index >= self.width {
-            return self.width;
-        }
-        if target_length < self.lower_bound || target_length > self.upper_bound {
-            return 0;
-        }
-        let row_index = target_length - self.lower_bound;
-        let is_one = self.rows[row_index][index];
-        if is_one {
-            return index;
-        }
-        let one_rank = self.rows[row_index].rank(index);
-        if one_rank == 0 {
-            return 0;
-        }
-        // There is at least one smaller value before.
-        self.rows[row_index].select(one_rank - 1).unwrap()
-    }
-
-    pub fn next(&self, index: usize, target_length: usize) -> usize {
-        if index >= self.width {
-            return self.width;
-        }
-        if target_length < self.lower_bound || target_length > self.upper_bound {
-            return self.width;
-        }
-        let row_index = target_length - self.lower_bound;
-        let is_one = self.rows[row_index][index];
-        if is_one {
-            return index;
-        }
-        let one_rank = self.rows[row_index].rank(index);
-        // if one_rank == self.one_count[row_index].count_ones() {
-        if one_rank == self.one_count[row_index] {
-            return self.width;
-        }
-        // There is at least one smaller value after.
-        self.rows[row_index].select(one_rank).unwrap()
-    }
-
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.width
-    }
-
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.width == 0
-    }
-}
-
-impl Pnsv for MatrixSux {
     #[inline]
     fn previous(&self, index: usize, target_length: usize) -> usize {
         self.previous(index, target_length)
