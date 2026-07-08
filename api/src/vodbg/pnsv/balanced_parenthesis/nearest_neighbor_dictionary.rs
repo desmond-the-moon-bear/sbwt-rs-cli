@@ -16,8 +16,6 @@ use simple_sds_sbwt::{
 ///
 /// Implementation adapted from the C++ library sdsl-lite to Rust.
 ///
-// note(mk): The dependency simple-ds-sbwt should not be too difficult to replace by rewriting the
-// data structures used.
 // note(mk): Should the structure be generic over the SAMPLE_OFFSET? If it is, the compiler will be
 // able to optimise the division and modulo operations. If it isn't, it will be more difficult to
 // dynamically create the structure.
