@@ -31,8 +31,9 @@ pub struct Counts {
 
 impl Counts {
     pub const DEFAULT_SAMPLE_DISTANCE: usize = 16;
+    pub const DEFAULT_BATCH_SIZE_IN_BYTES: usize = 8 * (1 << 20);
 
-    pub fn try_new_with_default_values<SS, E, C>(
+    pub fn try_new_default<SS, E, C>(
         sequence_stream: SS,
         streaming_index: StreamingIndex<'_, E, C>,
         dummy_info: &impl DummyInfo
@@ -135,6 +136,7 @@ impl Counts {
         sample_distance: usize,
         additional_memory_bound_gb: usize,
         thread_count: usize,
+        batch_size: usize,
     ) -> Option<Self>
     where 
         SS: SeqStream + Send,
@@ -165,26 +167,23 @@ impl Counts {
 
         use crossbeam::channel::bounded;
         // To ensure that the additional memory bound is respected, bound the channel size.
-        let (batches_in, batches_out) = bounded(consumer_thread_count);
+        let batch_bound = additional_memory_bound_gb * (1_usize << 30) / batch_size;
+        let (batches_in, batches_out) = bounded(batch_bound);
 
-        // Divide the memory evenly between the producer thread and the consumer threads.
-        let buffer_capacity = additional_memory_bound_gb * ((1_usize << 30) / thread_count);
-        std::thread::scope(|s| {
-            s.spawn(move || {
-                sequence_producer_thread(sequence_stream, buffer_capacity, batches_in);
-            });
-        });
-
-        let thread_pool = rayon::ThreadPoolBuilder::new().num_threads(consumer_thread_count).build().unwrap();
+        let thread_pool = rayon::ThreadPoolBuilder::new().num_threads(thread_count).build().unwrap();
         thread_pool.scope(|s| {
+            s.spawn(move |_| {
+                sequence_producer_thread(sequence_stream, batch_size, batches_in);
+            });
 
             let individual_counts = &individual_counts;
             let sample_information = &sample_information;
             let large_counts = &large_counts;
             let success = &success;
-            for _ in 0..consumer_thread_count {
+            for i in 0..consumer_thread_count {
                 let batches_out_cloned = batches_out.clone();
                 s.spawn(move |_| {
+                    log::info!("[Counts::try_new_concurrent] starting consumer thread {}...", i);
                     let result = sequence_consumer_thread_with_hash_map(
                         batches_out_cloned,
                         streaming_index,
@@ -194,7 +193,7 @@ impl Counts {
                         sample_information,
                         large_counts
                     );
-                    if result.is_ok() {
+                    if result.is_err() {
                         success.store(false, Ordering::SeqCst);
                     }
                 });
@@ -357,6 +356,8 @@ where SS: SeqStream + Send,
     let mut bounds = Vec::<usize>::new();
 
     let mut progress: f64 = 0.0;
+    let step = 30;
+    let mut clock = step;
 
     while let Some(sequence) = sequence_stream.stream_next() {
         bounds.push(buffer.len());
@@ -364,7 +365,11 @@ where SS: SeqStream + Send,
 
         if buffer.len() >= buffer_capacity {
             progress += buffer.len() as f64;
-            log::info!("[reading sequencess] {} done.", human_bytes::human_bytes(progress));
+            clock -= 1;
+            if clock == 0 {
+                log::info!("[reading sequencess] {} done.", human_bytes::human_bytes(progress));
+                clock = step;
+            }
 
             // End sentinel.
             bounds.push(buffer.len());
@@ -483,7 +488,7 @@ mod tests {
         };
 
         let vodbg = vodbg::VoDbg::new(&sbwt, &pnsv_tuned);
-        let counts = Counts::try_new_with_default_values(sequence_stream, streaming_index, &vodbg);
+        let counts = Counts::try_new_default(sequence_stream, streaming_index, &vodbg);
         assert!(counts.is_none())
     }
 
@@ -540,7 +545,8 @@ mod tests {
             sequence_stream,
             &streaming_index,
             &vodbg,
-            Counts::DEFAULT_SAMPLE_DISTANCE, 1, 4
+            Counts::DEFAULT_SAMPLE_DISTANCE, 1, 4,
+            128,
         ).unwrap();
 
         for current_k in 1..max_k {
