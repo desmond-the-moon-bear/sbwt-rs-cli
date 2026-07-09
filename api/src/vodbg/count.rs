@@ -2,7 +2,8 @@ use crate::{ContractLeft, ExtendRight, SeqStream, StreamingIndex};
 
 use super::DummyInfo;
 
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize};
+use std::sync::atomic::Ordering;
 use crossbeam::channel::{Sender, Receiver};
 use dashmap::DashMap;
 
@@ -35,7 +36,7 @@ impl Counts {
 
     pub fn try_new_default<SS, E, C>(
         sequence_stream: SS,
-        streaming_index: StreamingIndex<'_, E, C>,
+        streaming_index: &StreamingIndex<'_, E, C>,
         dummy_info: &impl DummyInfo
     ) -> Option<Self>
     where 
@@ -48,7 +49,7 @@ impl Counts {
 
     pub fn try_new<SS, E, C>(
         mut sequence_stream: SS,
-        streaming_index: StreamingIndex<'_, E, C>,
+        streaming_index: &StreamingIndex<'_, E, C>,
         #[allow(unused)] dummy_info: &impl DummyInfo,
         sample_distance: usize
     ) -> Option<Self>
@@ -58,7 +59,10 @@ impl Counts {
         C: ContractLeft,
     {
         let mut individual_counts: Vec<u8> = vec![0; streaming_index.n];
-        let sample_count = streaming_index.n / sample_distance + 1;
+
+        // Create an imaginary sample before the beginning and after the end of the array to ensure
+        // there is a sample before and after each element.
+        let sample_count = streaming_index.n / sample_distance + 2;
         let mut sample_information: Vec<Sample> = vec![Sample::default(); sample_count];
 
         // note(mk): Check other hash maps and/or think for other solutions...
@@ -128,8 +132,8 @@ impl Counts {
 
     /// Counts the number of occurrences of each k-mer in the input sequence concurrently. There
     /// must always be one sequence producer thread and at least one sequence consumer thread i.e.
-    /// the procedure will panic if thread_count is < 1.
-    pub fn try_new_concurrent<SS, E, C, D>(
+    /// the procedure will panic if thread_count is < 2.
+    pub fn try_new_concurrent_with_hashmap<SS, E, C, D>(
         sequence_stream: SS,
         streaming_index: &StreamingIndex<'_, E, C>,
         dummy_info: &D,
@@ -151,7 +155,9 @@ impl Counts {
             .map(AtomicU8::new)
             .collect();
 
-        let sample_count = streaming_index.n / sample_distance + 1;
+        // Create an imaginary sample before the beginning and after the end of the array to ensure
+        // there is a sample before and after each element.
+        let sample_count = streaming_index.n / sample_distance + 2;
         let sample_information: Vec<PartialAtomicSample> = vec![Sample::default(); sample_count]
             .into_iter()
             .map(|sample| PartialAtomicSample {
@@ -183,7 +189,7 @@ impl Counts {
             for i in 0..consumer_thread_count {
                 let batches_out_cloned = batches_out.clone();
                 s.spawn(move |_| {
-                    log::info!("[Counts::try_new_concurrent] starting consumer thread {}...", i);
+                    log::info!("[Counts::try_new_concurrent_with_hashmap] starting consumer thread [{}].", i);
                     let result = sequence_consumer_thread_with_hash_map(
                         batches_out_cloned,
                         streaming_index,
@@ -209,7 +215,6 @@ impl Counts {
         let large_counts: Vec<u64> = pairs.into_iter().map(|(_, count)| count).collect();
 
         // The following transformations from the atomic should ultimately become NOPs.
-        use std::sync::atomic::Ordering;
         let individual_counts: Vec<u8> = individual_counts
             .into_iter()
             .map(|i| i.load(Ordering::Relaxed))
@@ -248,7 +253,7 @@ impl Counts {
         let mut individual_index = 0;
         let mut large_count_index = 0;
         // The first sample is "before" the beginning of the array and will have a value of 0.
-        for i in 1..sample_count {
+        'outer: for i in 1..sample_count {
             sample_information[i].count = sample_information[i - 1].count;
             sample_information[i].large_counts_up_to_sample += sample_information[i - 1].large_counts_up_to_sample;
             for _ in 0..sample_distance {
@@ -258,8 +263,177 @@ impl Counts {
                     large_count_index += 1;
                 }
                 individual_index += 1;
+                if individual_index >= individual_counts.len() {
+                    break 'outer;
+                }
             }
         }
+    }
+
+    #[allow(unused)]
+    pub fn try_new_concurrent_two_passes<SS, E, C, D>(
+        sequence_stream: SS,
+        streaming_index: &StreamingIndex<'_, E, C>,
+        dummy_info: &D,
+        sample_distance: usize,
+        additional_memory_bound_gb: usize,
+        thread_count: usize,
+        batch_size: usize,
+    ) -> Option<Self>
+    where 
+        SS: SeqStream + Clone + Send,
+        E: ExtendRight + Sync,
+        C: ContractLeft + Sync,
+        D: DummyInfo + Sync
+    {
+        assert!(thread_count > 1);
+
+        let individual_counts: Vec<AtomicU8> = vec![0u8; streaming_index.n]
+            .into_iter()
+            .map(AtomicU8::new)
+            .collect();
+
+        // Create an imaginary sample before the beginning and after the end of the array to ensure
+        // there is a sample before and after each element.
+        let sample_count = streaming_index.n / sample_distance + 2;
+        let sample_information: Vec<PartialAtomicSample> = vec![Sample::default(); sample_count]
+            .into_iter()
+            .map(|sample| PartialAtomicSample {
+                count: sample.count,
+                large_counts_up_to_sample: AtomicUsize::new(sample.large_counts_up_to_sample),
+            })
+            .collect();
+
+        let success = AtomicBool::new(true);
+        let consumer_thread_count = thread_count - 1;
+
+        use crossbeam::channel::bounded;
+        // To ensure that the additional memory bound is respected, bound the channel size.
+        let batch_bound = additional_memory_bound_gb * (1_usize << 30) / batch_size;
+
+        let thread_pool = rayon::ThreadPoolBuilder::new().num_threads(thread_count).build().unwrap();
+
+        // ===== first pass start =====
+        let (first_pass_batches_in, first_pass_batches_out) = bounded(batch_bound);
+        let first_pass_sequence_stream = sequence_stream.clone();
+        thread_pool.scope(|s| {
+            s.spawn(move |_| {
+                log::info!("[Counts::try_new_concurrent_two_passes] starting first pass producer thread.");
+                sequence_producer_thread(first_pass_sequence_stream, batch_size, first_pass_batches_in);
+            });
+
+            let individual_counts = &individual_counts;
+            let sample_information = &sample_information;
+            let success = &success;
+            for i in 0..consumer_thread_count {
+                let first_pass_batches_out_cloned = first_pass_batches_out.clone();
+                s.spawn(move |_| {
+                    log::info!("[Counts::try_new_concurrent_two_passes] starting first pass consumer thread [{}].", i);
+                    let result = sequence_consumer_thread_first_pass(
+                        first_pass_batches_out_cloned,
+                        streaming_index,
+                        dummy_info,
+                        sample_distance,
+                        individual_counts,
+                        sample_information
+                    );
+                    if result.is_err() {
+                        success.store(false, Ordering::SeqCst);
+                    }
+                });
+            }
+        });
+
+        if !success.load(Ordering::SeqCst) {
+            // return None;
+        }
+
+        // The following transformations from the atomic should ultimately become NOPs.
+        let individual_counts: Vec<u8> = individual_counts
+            .into_iter()
+            .map(|i| i.load(Ordering::Relaxed))
+            .collect();
+        let mut sample_information: Vec<Sample> = sample_information
+            .into_iter()
+            .map(|sample| Sample {
+                count: sample.count,
+                large_counts_up_to_sample: sample.large_counts_up_to_sample.load(Ordering::Relaxed)
+            }).collect();
+
+        // Make the large counts be a prefix sum array for the second pass.
+        let mut individual_index = 0;
+        let mut large_count_index = 0;
+        for i in 1..sample_count {
+            sample_information[i].large_counts_up_to_sample += sample_information[i - 1].large_counts_up_to_sample;
+        }
+
+        let number_of_large_counts = sample_information[sample_count - 1].large_counts_up_to_sample;
+        let large_counts: Vec<AtomicU64> = vec![0u64; number_of_large_counts]
+            .into_iter()
+            .map(AtomicU64::new)
+            .collect();
+
+        // ===== second pass =====
+        let (second_pass_batches_in, second_pass_batches_out) = bounded(batch_bound);
+        let second_pass_sequence_stream = sequence_stream;
+        thread_pool.scope(|s| {
+            s.spawn(move |_| {
+                log::info!("[Counts::try_new_concurrent_two_passes] starting second pass producer thread.");
+                sequence_producer_thread(second_pass_sequence_stream, batch_size, second_pass_batches_in);
+            });
+
+            let individual_counts = &individual_counts;
+            let sample_information = &sample_information;
+            let large_counts = &large_counts;
+            for i in 0..consumer_thread_count {
+                let second_pass_batches_out_cloned = second_pass_batches_out.clone();
+                s.spawn(move |_| {
+                    log::info!("[Counts::try_new_concurrent_two_passes] starting second pass consumer thread [{}].", i);
+                    sequence_consumer_thread_second_pass(
+                        second_pass_batches_out_cloned,
+                        streaming_index,
+                        sample_distance,
+                        individual_counts,
+                        sample_information,
+                        large_counts,
+                    );
+                });
+            }
+        });
+
+        // To make the code for the second pass thread more simple I don't skip counting the first
+        // u8::MAX instances of the k-mer, so we neet to remove them from the large counts here.
+        let large_counts: Vec<u64> = large_counts
+            .into_iter()
+            .map(|value| value.load(Ordering::Relaxed) - u8::MAX as u64)
+            .collect();
+
+        // Compute the prefux sum array for the k-mer count of the samples.
+        let mut individual_index = 0;
+        let mut large_count_index = 0;
+        'outer: for i in 1..sample_count {
+            sample_information[i].count = sample_information[i - 1].count;
+            for _ in 0..sample_distance {
+                sample_information[i].count += individual_counts[individual_index] as u64;
+                if individual_counts[individual_index] == u8::MAX {
+                    sample_information[i].count += large_counts[large_count_index];
+                    large_count_index += 1;
+                }
+                individual_index += 1;
+                if individual_index >= individual_counts.len() {
+                    break 'outer;
+                }
+            }
+        }
+
+        let result = Self {
+            individual_counts,
+            sample_distance,
+            sample_information,
+            large_counts,
+        };
+
+        Some(result)
     }
 
     /// Returns the sum of the counts in a given range.
@@ -355,9 +529,9 @@ where SS: SeqStream + Send,
     let mut buffer = Vec::<u8>::with_capacity(buffer_capacity);
     let mut bounds = Vec::<usize>::new();
 
+    let step: f64 = (1_u64 << 30) as f64;
+    let mut bound = step;
     let mut progress: f64 = 0.0;
-    let step = 30;
-    let mut clock = step;
 
     while let Some(sequence) = sequence_stream.stream_next() {
         bounds.push(buffer.len());
@@ -365,10 +539,9 @@ where SS: SeqStream + Send,
 
         if buffer.len() >= buffer_capacity {
             progress += buffer.len() as f64;
-            clock -= 1;
-            if clock == 0 {
-                log::info!("[reading sequencess] {} done.", human_bytes::human_bytes(progress));
-                clock = step;
+            if progress >= bound {
+                log::info!("[sequence_producer_thread] {} read.", human_bytes::human_bytes(progress));
+                bound += step;
             }
 
             // End sentinel.
@@ -382,10 +555,13 @@ where SS: SeqStream + Send,
     }
 
     if !buffer.is_empty() {
+        progress += buffer.len() as f64;
         bounds.push(buffer.len());
         let batch = Batch { buffer, bounds };
         output.send(batch).unwrap();
     }
+
+    log::info!("[sequence_producer_thread] {} read.", human_bytes::human_bytes(progress));
 
     drop(output);
 }
@@ -423,7 +599,6 @@ where
                 // note(mk):
                 //  * fetch_update will be renamed to try_update in a future version of Rust.
                 //  * the ordering could be more relaxed probably?
-                use std::sync::atomic::Ordering;
                 let result = individual_counts[representative].fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
                     if value < u8::MAX {
                         Some(value + 1)
@@ -453,6 +628,110 @@ where
         }
     }
     Ok(())
+}
+
+fn sequence_consumer_thread_first_pass<E, C, D>(
+    input: Receiver<Batch>,
+    streaming_index: &StreamingIndex<'_, E, C>,
+    dummy_info: &D,
+    sample_distance: usize,
+    individual_counts: &[AtomicU8],
+    sample_information: &[PartialAtomicSample],
+) -> Result<(), ()>
+where 
+    E: ExtendRight,
+    C: ContractLeft,
+    D: DummyInfo
+{
+    let _ = dummy_info;
+    while let Ok(batch) = input.recv() {
+        for sequence in batch.iter() {
+            for (length, range) in streaming_index.matching_statistics_iter(sequence) {
+                if length == 0 {
+                    continue;
+                }
+
+                let representative = range.start;
+
+                // let sbwt_was_not_built_with_all_dummies = length < streaming_index.k
+                //     && (!dummy_info.is_dummy(representative) || dummy_info.get_dummy_length(representative) != length);
+                // if sbwt_was_not_built_with_all_dummies {
+                //     return Err(());
+                // }
+
+                // note(mk):
+                //  * fetch_update will be renamed to try_update in a future version of Rust.
+                //  * the ordering could be more relaxed probably?
+                let result = individual_counts[representative].fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
+                    if value < u8::MAX {
+                        Some(value + 1)
+                    } else {
+                        None
+                    }
+                });
+                let previous = match result {
+                    Ok(value) => value,
+                    Err(value) => value,
+                };
+
+                let sample = representative / sample_distance + 1;
+                if previous == u8::MAX - 1 {
+                    sample_information[sample].large_counts_up_to_sample.fetch_add(1, Ordering::AcqRel);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn sequence_consumer_thread_second_pass<E, C>(
+    input: Receiver<Batch>,
+    streaming_index: &StreamingIndex<'_, E, C>,
+    sample_distance: usize,
+    individual_counts: &[u8],
+    sample_information: &[Sample],
+    large_counts: &[AtomicU64],
+)
+where 
+    E: ExtendRight,
+    C: ContractLeft,
+{
+    // To make this pass simpler I don't skip the already counted first 255 instances of the k-mer.
+    while let Ok(batch) = input.recv() {
+        for sequence in batch.iter() {
+            for (length, range) in streaming_index.matching_statistics_iter(sequence) {
+                if length == 0 {
+                    continue;
+                }
+                let representative = range.start;
+                if individual_counts[representative] == u8::MAX {
+                    let large_count_index = find_large_count_index(
+                        sample_distance,
+                        individual_counts,
+                        sample_information,
+                        representative
+                    );
+                    large_counts[large_count_index].fetch_add(1, Ordering::AcqRel);
+                }
+            }
+        }
+    }
+}
+
+fn find_large_count_index(
+    sample_distance: usize,
+    individual_counts: &[u8],
+    sample_information: &[Sample],
+    index: usize
+) -> usize {
+    let previous_sample = index / sample_distance;
+    let mut large_count_index = sample_information[previous_sample].large_counts_up_to_sample;
+    for scan_index in previous_sample * sample_distance..index {
+        if individual_counts[scan_index] == u8::MAX {
+            large_count_index += 1;
+        }
+    }
+    large_count_index
 }
 
 #[cfg(test)]
@@ -488,7 +767,7 @@ mod tests {
         };
 
         let vodbg = vodbg::VoDbg::new(&sbwt, &pnsv_tuned);
-        let counts = Counts::try_new_default(sequence_stream, streaming_index, &vodbg);
+        let counts = Counts::try_new_default(sequence_stream, &streaming_index, &vodbg);
         assert!(counts.is_none())
     }
 
@@ -539,15 +818,29 @@ mod tests {
             k: max_k,
         };
 
-        // let counts = Counts::try_new_with_default_values(sequence_stream, streaming_index, &vodbg).unwrap();
         let sequence_stream = crate::util::VecSeqStream::new(&seqs);
-        let counts = Counts::try_new_concurrent(
+        let counts = Counts::try_new_default(sequence_stream, &streaming_index, &vodbg).unwrap();
+
+        let sequence_stream = crate::util::VecSeqStream::new(&seqs);
+        let counts_concurrent_with_hashmap = Counts::try_new_concurrent_with_hashmap(
             sequence_stream,
             &streaming_index,
             &vodbg,
             Counts::DEFAULT_SAMPLE_DISTANCE, 1, 4,
             128,
         ).unwrap();
+
+        let sequence_stream = crate::util::VecSeqStream::new(&seqs);
+        let counts_concurrent_two_passes = Counts::try_new_concurrent_two_passes(
+            sequence_stream,
+            &streaming_index,
+            &vodbg,
+            Counts::DEFAULT_SAMPLE_DISTANCE, 1, 4,
+            128,
+        ).unwrap();
+
+        assert_eq!(counts, counts_concurrent_with_hashmap);
+        assert_eq!(counts, counts_concurrent_two_passes);
 
         for current_k in 1..max_k {
             for node in vodbg::iter::node_iterator_with_k(&vodbg, current_k) {
@@ -572,6 +865,60 @@ mod tests {
 
             assert_eq!(true_count, range_count);
             assert_eq!(true_count, count_from_iterator);
+        }
+    }
+
+    #[test]
+    fn sample_positions() {
+        let max_k = 4;
+        let seqs: Vec<Vec<u8>> = vec![vec![b'A'; 16]; 512];
+        let (sbwt, lcs) = SbwtIndexBuilder::<BitPackedKmerSortingMem>::new()
+            .k(max_k).build_lcs(true)
+            .add_all_dummy_paths(true)
+            .build_select_support(true)
+            .run_from_vecs(&seqs);
+        let lcs = lcs.unwrap();
+
+        let pnsv_tuned = PnsvTuned::new_with_default_values(&sbwt, &lcs, max_k);
+
+        let vodbg = vodbg::VoDbg::new(&sbwt, &pnsv_tuned);
+
+        let streaming_index = StreamingIndex {
+            extend_right: &sbwt,
+            contract_left: &pnsv_tuned,
+            n: sbwt.n_sets(),
+            k: max_k,
+        };
+
+        let sequence_stream = crate::util::VecSeqStream::new(&seqs);
+        let counts = Counts::try_new(sequence_stream, &streaming_index, &vodbg, 3).unwrap();
+
+        let sequence_stream = crate::util::VecSeqStream::new(&seqs);
+        let counts_concurrent_with_hashmap = Counts::try_new_concurrent_with_hashmap(
+            sequence_stream,
+            &streaming_index,
+            &vodbg,
+            3, 1, 4, 128,
+        ).unwrap();
+
+        let sequence_stream = crate::util::VecSeqStream::new(&seqs);
+        let counts_concurrent_two_passes = Counts::try_new_concurrent_two_passes(
+            sequence_stream,
+            &streaming_index,
+            &vodbg,
+            3, 1, 4, 128,
+        ).unwrap();
+
+        assert_eq!(counts, counts_concurrent_with_hashmap);
+        assert_eq!(counts, counts_concurrent_two_passes);
+
+        for current_k in 1..=max_k {
+            for node in vodbg::iter::node_iterator_with_k(&vodbg, current_k) {
+                let kmer = vodbg.get_kmer(node);
+                let true_count = count(&seqs, &kmer);
+                let range_count_many_threads  = counts.range_sum(node.start, node.end);
+                assert_eq!(true_count, range_count_many_threads);
+            }
         }
     }
 
