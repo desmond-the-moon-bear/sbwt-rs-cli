@@ -182,6 +182,7 @@ impl Pnsv for Ranges {
 mod tests {
     use super::*;
     use crate::vodbg::pnsv::LcsSimd;
+    use crate::vodbg::pnsv::scan::Scan;
     use crate::{BitPackedKmerSortingMem, SbwtIndexBuilder};
     use crate::{SbwtIndex, SubsetMatrix, LcsArray};
 

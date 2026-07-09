@@ -6,20 +6,52 @@ use super::Pnsv;
 
 mod macros;
 
-pub type Word = wide::u8x32;
+// pub type Word = wide::u8x32;
+
+pub trait Scan: Sized {
+    type Word;
+    type Element;
+    const LANES: usize;
+    const BYTES_PER_ELEMENT: usize;
+    fn from_iterator<T, I>(input: I, n: usize) -> Self
+    where T: Into<Self::Element>, I: Iterator<Item = T>;
+    fn scan_left(&self, index: usize, target_length: usize) -> usize;
+    fn scan_right(&self, index: usize, target_length: usize) -> usize;
+    fn scan_left_bounded(&self, index: usize, target_length: usize, bound: usize) -> Result<usize, usize>;
+    fn scan_right_bounded(&self, index: usize, target_length: usize, bound: usize) -> Result<usize, usize>;
+    fn serialize<W: std::io::Write>(&self, out: &mut W) -> std::io::Result<usize>;
+    fn load<R: std::io::Read>(input: &mut R) -> std::io::Result<Self>;
+    fn len(&self) -> usize;
+    fn is_empty(&self) -> bool;
+}
+
+impl<T: Scan> Pnsv for T {
+    fn previous(&self, index: usize, target_length: usize) -> usize {
+        self.scan_left(index, target_length)
+    }
+
+    fn next(&self, index: usize, target_length: usize) -> usize {
+        self.scan_right(index, target_length)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LcsSimd {
-    pub words: Vec<Word>,
+    pub words: Vec<wide::u8x32>,
     pub n: usize,
 }
 
 impl LcsSimd {
-    const ZERO: [u8; Word::LANES as usize] = [0; Word::LANES as usize];
-    pub const LANES: usize = Word::LANES as usize;
-    pub const BYTES_PER_ELEMENT: usize = (Word::BITS as u32 / u8::BITS) as usize / Self::LANES;
+    const ZERO: [u8; Self::LANES] = [0; Self::LANES];
+}
 
-    pub fn from_iterator<T, I>(input: I, n: usize) -> Self
+impl Scan for LcsSimd {
+    type Word = wide::u8x32;
+    type Element = u8;
+    const LANES: usize = Self::Word::LANES as usize;
+    const BYTES_PER_ELEMENT: usize = (Self::Word::BITS as u32 / u8::BITS) as usize / Self::LANES;
+
+    fn from_iterator<T, I>(input: I, n: usize) -> Self
     where
         T: Into<u8>,
         I: Iterator<Item = T>,
@@ -33,7 +65,7 @@ impl LcsSimd {
         let mut array = Self::ZERO;
         for (i, item) in input.enumerate() {
             if i != 0 && i % Self::LANES == 0 {
-                words.push(Word::new(array));
+                words.push(Self::Word::new(array));
                 array = Self::ZERO;
             }
             array[i % Self::LANES] = item.into();
@@ -44,16 +76,17 @@ impl LcsSimd {
                 log::info!("[LcsSimd] {}0%", percent_count);
             }
         }
-        words.push(Word::new(array));
+        words.push(Self::Word::new(array));
 
         Self { words, n }
     }
 
-    pub fn scan_left(&self, index: usize, target_length: u8) -> usize {
+    fn scan_left(&self, index: usize, target_length: usize) -> usize {
         if index >= self.n {
             return 0;
         }
 
+        let target_length = target_length as Self::Element;
         let word_index = index / Self::LANES;
         let index_in_word = index % Self::LANES;
 
@@ -79,11 +112,12 @@ impl LcsSimd {
         0
     }
 
-    pub fn scan_right(&self, index: usize, target_length: u8) -> usize {
+    fn scan_right(&self, index: usize, target_length: usize) -> usize {
         if index >= self.n {
             return self.n;
         }
 
+        let target_length = target_length as Self::Element;
         let word_index = index / Self::LANES;
         let index_in_word = index % Self::LANES;
 
@@ -112,11 +146,12 @@ impl LcsSimd {
     }
 
     /// Bound gives the maximum number of words to be scanned in addition to the one the index is located.
-    pub fn scan_left_bounded(&self, index: usize, target_length: u8, bound: usize) -> Result<usize, usize> {
+    fn scan_left_bounded(&self, index: usize, target_length: usize, bound: usize) -> Result<usize, usize> {
         if index >= self.n {
             return Err(self.n);
         }
 
+        let target_length = target_length as Self::Element;
         let word_index = index / Self::LANES;
         let index_in_word = index % Self::LANES;
 
@@ -145,11 +180,12 @@ impl LcsSimd {
     }
 
     /// Bound gives the maximum number of words to be scanned in addition to the one the index is located.
-    pub fn scan_right_bounded(&self, index: usize, target_length: u8, bound: usize) -> Result<usize, usize> {
+    fn scan_right_bounded(&self, index: usize, target_length: usize, bound: usize) -> Result<usize, usize> {
         if index >= self.n {
             return Err(self.n);
         }
 
+        let target_length = target_length as Self::Element;
         let word_index = index / Self::LANES;
         let index_in_word = index % Self::LANES;
 
@@ -182,7 +218,7 @@ impl LcsSimd {
         Err(upper_bound_word_index * Self::LANES - 1)
     }
 
-    pub fn serialize<W: std::io::Write>(&self, out: &mut W) -> std::io::Result<usize> {
+    fn serialize<W: std::io::Write>(&self, out: &mut W) -> std::io::Result<usize> {
         log::info!("[LcsSimd::load] serializing...");
         let mut written: usize = 0;
         out.write_all(&(self.n as u64).to_le_bytes())?;
@@ -196,12 +232,12 @@ impl LcsSimd {
         Ok(written)
     }
 
-    pub fn load<R: std::io::Read>(input: &mut R) -> std::io::Result<Self> {
+    fn load<R: std::io::Read>(input: &mut R) -> std::io::Result<Self> {
         log::info!("[LcsSimd::load] loading...");
         let n = u64::from_le(u64::load(input)?) as usize;
         #[allow(clippy::manual_div_ceil)]
         let word_count = (n + Self::LANES - 1) / Self::LANES;
-        let mut words: Vec<Word> = Vec::with_capacity(word_count);
+        let mut words: Vec<Self::Word> = Vec::with_capacity(word_count);
         let mut array = Self::ZERO;
         let mut bytes = [0; Self::BYTES_PER_ELEMENT];
         for _ in 0..word_count {
@@ -209,7 +245,7 @@ impl LcsSimd {
                 input.read_exact(&mut bytes)?;
                 array[i] = u8::from_le_bytes(bytes);
             }
-            words.push(Word::new(array));
+            words.push(Self::Word::new(array));
         }
         let result = Self {
             words,
@@ -219,25 +255,13 @@ impl LcsSimd {
     }
 
     #[inline]
-    pub fn len(&self) -> usize {
+    fn len(&self) -> usize {
         self.n
     }
 
     #[inline]
-    pub fn is_empty(&self) -> bool {
+    fn is_empty(&self) -> bool {
         self.n == 0
-    }
-}
-
-impl Pnsv for LcsSimd {
-    #[inline]
-    fn previous(&self, index: usize, target_length: usize) -> usize {
-        self.scan_left(index, target_length as u8)
-    }
-
-    #[inline]
-    fn next(&self, index: usize, target_length: usize) -> usize {
-        self.scan_right(index, target_length as u8)
     }
 }
 
@@ -280,9 +304,9 @@ impl AugmentedBoundedScan {
 impl Pnsv for AugmentedBoundedScan {
     fn previous(&self, index: usize, target_length: usize) -> usize {
         if target_length > self.target_length_upper {
-            return self.lcs_simd.scan_left(index, target_length as u8);
+            return self.lcs_simd.scan_left(index, target_length);
         }
-        let result = self.lcs_simd.scan_left_bounded(index, target_length as u8, self.scan_word_bound);
+        let result = self.lcs_simd.scan_left_bounded(index, target_length, self.scan_word_bound);
         match result {
             Ok(index) => index,
             Err(continue_search_index) => {
@@ -298,9 +322,9 @@ impl Pnsv for AugmentedBoundedScan {
 
     fn next(&self, index: usize, target_length: usize) -> usize {
         if target_length > self.target_length_upper {
-            return self.lcs_simd.scan_right(index, target_length as u8);
+            return self.lcs_simd.scan_right(index, target_length);
         }
-        let result = self.lcs_simd.scan_right_bounded(index, target_length as u8, self.scan_word_bound);
+        let result = self.lcs_simd.scan_right_bounded(index, target_length, self.scan_word_bound);
         match result {
             Ok(index) => index,
             Err(continue_search_index) => {

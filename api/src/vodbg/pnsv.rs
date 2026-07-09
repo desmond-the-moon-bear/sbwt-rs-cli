@@ -19,6 +19,7 @@ pub use ranges::Ranges;
 pub use scan::AugmentedBoundedScan as ABS;
 pub use scan::LcsSimd;
 pub use wavelet::WindowedWaveletTree as WWT;
+use scan::Scan;
 
 use simple_sds_sbwt::serialize::Serialize;
 
@@ -234,7 +235,7 @@ impl Pnsv for PnsvTuned {
             }
 
             if target_length <= self.matrix.max_target() {
-                let result = self.lcs_simd.scan_left_bounded(index, target_length as u8, self.scan_bound);
+                let result = self.lcs_simd.scan_left_bounded(index, target_length, self.scan_bound);
                 return match result {
                     Ok(index) => index,
                     Err(continue_search_index) => {
@@ -244,7 +245,7 @@ impl Pnsv for PnsvTuned {
             }
         }
 
-        self.lcs_simd.scan_left(index, target_length as u8)
+        self.lcs_simd.scan_left(index, target_length)
     }
 
     fn next(&self, index: usize, target_length: usize) -> usize {
@@ -258,7 +259,7 @@ impl Pnsv for PnsvTuned {
             }
 
             if target_length <= self.matrix.max_target() {
-                let result = self.lcs_simd.scan_right_bounded(index, target_length as u8, self.scan_bound);
+                let result = self.lcs_simd.scan_right_bounded(index, target_length, self.scan_bound);
                 return match result {
                     Ok(index) => index,
                     Err(continue_search_index) => {
@@ -268,7 +269,7 @@ impl Pnsv for PnsvTuned {
             }
         }
 
-        self.lcs_simd.scan_right(index, target_length as u8)
+        self.lcs_simd.scan_right(index, target_length)
     }
 }
 
@@ -368,7 +369,7 @@ impl Pnsv for PnsvSafe {
             return self.ranges.previous(index, target_length);
         }
         if !self.wwt.is_empty() {
-            let result = self.lcs_simd.scan_left_bounded(index, target_length as u8, self.scan_bound);
+            let result = self.lcs_simd.scan_left_bounded(index, target_length, self.scan_bound);
             match result {
                 Ok(index) => index,
                 Err(continue_search_index) => {
@@ -385,7 +386,7 @@ impl Pnsv for PnsvSafe {
             return self.ranges.next(index, target_length);
         }
         if !self.wwt.is_empty() {
-            let result = self.lcs_simd.scan_right_bounded(index, target_length as u8, self.scan_bound);
+            let result = self.lcs_simd.scan_right_bounded(index, target_length, self.scan_bound);
             match result {
                 Ok(index) => index,
                 Err(continue_search_index) => {
