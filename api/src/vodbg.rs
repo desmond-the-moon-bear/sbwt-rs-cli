@@ -16,12 +16,14 @@ use simple_sds_sbwt::int_vector::IntVector;
 use simple_sds_sbwt::raw_vector::{AccessRaw, RawVector};
 use simple_sds_sbwt::ops::{BitVec, Rank, Access};
 
-
 pub mod count;
 pub mod iter;
 /// Module for Previous and Next Smaller Value support.
 pub mod pnsv;
 pub mod benchmark;
+
+use count::Counts;
+use simple_sds_sbwt::serialize::Serialize;
 
 #[derive(Clone, Debug)]
 pub struct VoDbg<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> {
@@ -34,6 +36,7 @@ pub struct VoDbg<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> {
     /// [VoDbg::dummy_marks] bitvector and together with this packed integer array supports random
     /// access to these values given the position of a dummy node.
     dummy_lengths: IntVector,
+    counts: Option<Counts>,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
@@ -41,9 +44,6 @@ pub struct Node {
     pub start: usize,
     pub end: usize,
     pub k: usize,
-    // Limit the construction of this structure to this module.
-    // note(mk): Think about whether this really is a good idea...
-    // _phantom: std::marker::PhantomData<()>,
 }
 
 #[inline]
@@ -52,7 +52,6 @@ pub fn new_node(start: usize, end: usize, k: usize) -> Node {
         start,
         end,
         k,
-        // _phantom: Default::default(),
     }
 }
 
@@ -132,6 +131,45 @@ where
             pnsv,
             dummy_marks,
             dummy_lengths,
+            counts: None,
+        }
+    }
+
+    #[allow(clippy::result_unit_err)]
+    pub fn build_counts<Stream>(
+        &mut self,
+        sequence_stream: Stream,
+        sample_distance: usize,
+        additional_memory_bound_gb: usize,
+        thread_count: usize,
+        batch_size: usize,
+    ) -> Result<(), ()>
+    where
+        Stream: crate::SeqStream + Send,
+    {
+        if self.counts.is_some() {
+            return Ok(());
+        }
+        let streaming_index = crate::StreamingIndex {
+            extend_right: self.sbwt,
+            contract_left: self.pnsv,
+            n: self.sbwt.n_sets(),
+            k: self.sbwt.k(),
+        };
+        let result = Counts::try_new_concurrent_with_hashmap(
+            sequence_stream,
+            &streaming_index,
+            self,
+            sample_distance,
+            additional_memory_bound_gb,
+            thread_count,
+            batch_size
+        );
+        if let Some(counts) = result {
+            self.counts = Some(counts);
+            Ok(())
+        } else {
+            Err(())
         }
     }
 
@@ -515,6 +553,46 @@ where
         }
         None
     }
+
+    const SOME_COUNT: u8 = 1;
+    const NONE_COUNT: u8 = 1 - Self::SOME_COUNT;
+
+    pub fn serialize<W: std::io::Write>(&self, out: &mut W) -> std::io::Result<usize> {
+        use byteorder::WriteBytesExt;
+        let mut written = 0;
+        if let Some(count) = self.counts.as_ref() {
+            out.write_u8(Self::SOME_COUNT)?;
+            written += count.serialize(out)?;
+        } else {
+            out.write_u8(Self::NONE_COUNT)?;
+        }
+        written += 1;
+        self.dummy_marks.serialize(out)?;
+        self.dummy_lengths.serialize(out)?;
+        written += self.dummy_marks.size_in_bytes();
+        written += self.dummy_lengths.size_in_bytes();
+        Ok(written)
+    }
+
+    pub fn load<R: std::io::Read>(input: &mut R, sbwt: &'a SbwtIndex<SS>, pnsv: &'a P) -> std::io::Result<Self> {
+        use byteorder::ReadBytesExt;
+        let count_is_some = input.read_u8()?;
+        let counts = if count_is_some == Self::SOME_COUNT {
+            Some(Counts::load(input)?)
+        } else {
+            None
+        };
+        let dummy_marks = BitVector::load(input)?;
+        let dummy_lengths = IntVector::load(input)?;
+        let result = Self {
+            sbwt,
+            pnsv,
+            dummy_marks,
+            dummy_lengths,
+            counts,
+        };
+        Ok(result)
+    }
 }
 
 impl<'a, SS, P> DummyInfo for VoDbg<'a, SS, P>
@@ -542,19 +620,18 @@ mod tests {
     use pnsv::PnsvTuned;
 
     #[test]
-    fn randomised_kmers() {
+    fn serialize_and_load() {
         use rand_chacha::ChaCha20Rng;
         use rand_chacha::rand_core::SeedableRng;
         use rand_chacha::rand_core::RngCore;
 
-        const MIN_K: usize = 3;
-        let k: usize = 20;
-        let kmer_count = 256;
+        let max_k: usize = 16;
+        let kmer_count = 128;
         let mut rng = ChaCha20Rng::from_seed([42; 32]);
 
         let mut seqs = Vec::<Vec<u8>>::new();
         for _ in 0..kmer_count {
-            let kmer: Vec<u8> = (0..k).map(|_| match rng.next_u32() % 4 {
+            let kmer: Vec<u8> = (0..max_k).map(|_| match rng.next_u32() % 4 {
                 0 => b'A',
                 1 => b'C',
                 2 => b'G',
@@ -566,10 +643,71 @@ mod tests {
         seqs.sort();
         seqs.dedup();
 
-        let mut sbwt_indices: Vec<(SbwtIndex<SubsetMatrix>, Option<LcsArray>)> = Vec::with_capacity(k);
-        let mut graphs = Vec::with_capacity(k);
+        let (sbwt, lcs) = SbwtIndexBuilder::<BitPackedKmerSortingMem>::new()
+            .k(max_k).build_lcs(true)
+            .add_all_dummy_paths(true)
+            .build_select_support(true)
+            .run_from_vecs(&seqs);
+        let lcs = lcs.unwrap();
+        let pnsv_tuned = PnsvTuned::new_with_default_values(&sbwt, &lcs, max_k);
 
-        for i in MIN_K..=k {
+        let mut vodbg = VoDbg::new(&sbwt, &pnsv_tuned);
+
+        // Without Counts being built.
+        let mut buffer = Vec::<u8>::new();
+        let written = vodbg.serialize(&mut buffer).unwrap();
+        assert_eq!(written, buffer.len());
+        let vodbg_loaded = VoDbg::load(&mut buffer.as_slice(), &sbwt, &pnsv_tuned).unwrap();
+        assert_eq!(vodbg.counts, vodbg_loaded.counts);
+        assert_eq!(vodbg.dummy_marks, vodbg_loaded.dummy_marks);
+        assert_eq!(vodbg.dummy_lengths, vodbg_loaded.dummy_lengths);
+
+        // With Counts being built.
+        let sequence_stream = crate::util::VecSeqStream::new(&seqs);
+        vodbg.build_counts(
+            sequence_stream,
+            Counts::DEFAULT_SAMPLE_DISTANCE,
+            1, 4,
+            Counts::DEFAULT_BATCH_SIZE_IN_BYTES
+        ).unwrap();
+        buffer.clear();
+        let written = vodbg.serialize(&mut buffer).unwrap();
+        assert_eq!(written, buffer.len());
+        let vodbg_loaded = VoDbg::load(&mut buffer.as_slice(), &sbwt, &pnsv_tuned).unwrap();
+        assert_eq!(vodbg.counts, vodbg_loaded.counts);
+        assert_eq!(vodbg.dummy_marks, vodbg_loaded.dummy_marks);
+        assert_eq!(vodbg.dummy_lengths, vodbg_loaded.dummy_lengths);
+    }
+
+    #[test]
+    fn randomised_kmers() {
+        use rand_chacha::ChaCha20Rng;
+        use rand_chacha::rand_core::SeedableRng;
+        use rand_chacha::rand_core::RngCore;
+
+        const MIN_K: usize = 3;
+        let max_k: usize = 20;
+        let kmer_count = 256;
+        let mut rng = ChaCha20Rng::from_seed([42; 32]);
+
+        let mut seqs = Vec::<Vec<u8>>::new();
+        for _ in 0..kmer_count {
+            let kmer: Vec<u8> = (0..max_k).map(|_| match rng.next_u32() % 4 {
+                0 => b'A',
+                1 => b'C',
+                2 => b'G',
+                _ => b'T',
+            }).collect();
+            seqs.push(kmer);
+        }
+
+        seqs.sort();
+        seqs.dedup();
+
+        let mut sbwt_indices: Vec<(SbwtIndex<SubsetMatrix>, Option<LcsArray>)> = Vec::with_capacity(max_k);
+        let mut graphs = Vec::with_capacity(max_k);
+
+        for i in MIN_K..=max_k {
             let (sbwt, lcs) = SbwtIndexBuilder::<BitPackedKmerSortingMem>::new()
                 .k(i).build_lcs(true)
                 .build_select_support(true)
@@ -582,12 +720,12 @@ mod tests {
             graphs.push(dbg);
         }
 
-        let vodbg_sbwt = &sbwt_indices[k - MIN_K].0;
-        let vodbg_lcs = sbwt_indices[k - MIN_K].1.as_ref().unwrap();
-        let pnsv_tuned = PnsvTuned::new_with_default_values(vodbg_sbwt, vodbg_lcs, k);
+        let vodbg_sbwt = &sbwt_indices[max_k - MIN_K].0;
+        let vodbg_lcs = sbwt_indices[max_k - MIN_K].1.as_ref().unwrap();
+        let pnsv_tuned = PnsvTuned::new_with_default_values(vodbg_sbwt, vodbg_lcs, max_k);
         let vodbg = VoDbg::new(vodbg_sbwt, &pnsv_tuned);
 
-        let alphabet = sbwt_indices[k - MIN_K].0.alphabet();
+        let alphabet = sbwt_indices[max_k - MIN_K].0.alphabet();
 
         let mut dbg_buffer = vec![];
         let mut vodbg_buffer = vec![];
@@ -597,11 +735,11 @@ mod tests {
 
         let mut kmer_buffer = vec![];
 
-        for current_k in MIN_K..=k {
+        for current_k in MIN_K..=max_k {
             let dbg_index = current_k - MIN_K;
             let dbg = &graphs[dbg_index];
             for sequence_index in 0..seqs.len() {
-                for sequence_start in 0..k-current_k {
+                for sequence_start in 0..max_k-current_k {
                     let sequence = &seqs[sequence_index][sequence_start..sequence_start + current_k];
 
                     // get_node
@@ -697,8 +835,8 @@ mod tests {
 
         const EXTRA_KMERS_LOWER_BOUND_K: usize = 12;
         const EXTRA_SEQUENCE_COUNT: usize = 512;
-        let mut sequence: Vec<u8> = Vec::with_capacity(k);
-        for current_k in EXTRA_KMERS_LOWER_BOUND_K..=k {
+        let mut sequence: Vec<u8> = Vec::with_capacity(max_k);
+        for current_k in EXTRA_KMERS_LOWER_BOUND_K..=max_k {
             let dbg_index = current_k - MIN_K;
             let dbg = &graphs[dbg_index];
             for _ in 0..EXTRA_SEQUENCE_COUNT {

@@ -4,8 +4,10 @@ use super::DummyInfo;
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize};
 use std::sync::atomic::Ordering;
+
 use crossbeam::channel::{Sender, Receiver};
 use dashmap::DashMap;
+use simple_sds_sbwt::serialize::{Serializable, Serialize};
 
 type LargeCountMap = DashMap<usize, u64>;
 
@@ -19,6 +21,8 @@ struct PartialAtomicSample {
     count: u64,
     large_counts_up_to_sample: AtomicUsize,
 }
+
+impl Serializable for Sample {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Counts {
@@ -132,7 +136,9 @@ impl Counts {
 
     /// Counts the number of occurrences of each k-mer in the input sequence concurrently. There
     /// must always be one sequence producer thread and at least one sequence consumer thread i.e.
-    /// the procedure will panic if thread_count is < 2.
+    /// the procedure will panic if thread_count is < 2. The additional memory bound does not
+    /// include the size of the data working data structures, but is reserved for the streaming of
+    /// the input sequences. The batch size is in bytes.
     pub fn try_new_concurrent_with_hashmap<SS, E, C, D>(
         sequence_stream: SS,
         streaming_index: &StreamingIndex<'_, E, C>,
@@ -462,6 +468,38 @@ impl Counts {
     pub fn iter<'a>(&'a self) -> Iter<'a> {
         Iter { index: 0, large_count_index: 0, counts: self }
     }
+
+    pub fn serialize<W: std::io::Write>(&self, out: &mut W) -> std::io::Result<usize> {
+        let mut written = 0;
+        out.write_all(&(self.sample_distance as u64).to_le_bytes())?;
+        let individual_counts_len = self.individual_counts.len();
+        out.write_all(&(individual_counts_len as u64).to_le_bytes())?;
+        out.write_all(&self.individual_counts)?;
+        self.sample_information.serialize(out)?;
+        self.large_counts.serialize(out)?;
+        written += size_of::<u64>(); // self.sample_distance
+        written += size_of::<u64>(); // individuals_count_len
+        written += self.individual_counts.len();
+        written += self.sample_information.size_in_bytes();
+        written += self.large_counts.size_in_bytes();
+        Ok(written)
+    }
+
+    pub fn load<R: std::io::Read>(input: &mut R) -> std::io::Result<Self> {
+        let sample_distance = u64::from_le(u64::load(input)?) as usize;
+        let individual_counts_len = u64::from_le(u64::load(input)?) as usize;
+        let mut individual_counts: Vec<u8> = vec![0; individual_counts_len];
+        input.read_exact(&mut individual_counts)?;
+        let sample_information = Vec::<Sample>::load(input)?;
+        let large_counts = Vec::<u64>::load(input)?;
+        let result = Self {
+            individual_counts,
+            sample_distance,
+            sample_information,
+            large_counts
+        };
+        Ok(result)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -769,6 +807,56 @@ mod tests {
         let vodbg = vodbg::VoDbg::new(&sbwt, &pnsv_tuned);
         let counts = Counts::try_new_default(sequence_stream, &streaming_index, &vodbg);
         assert!(counts.is_none())
+    }
+
+    #[test]
+    fn serialize_and_load() {
+        use rand_chacha::ChaCha20Rng;
+        use rand_chacha::rand_core::SeedableRng;
+        use rand_chacha::rand_core::RngCore;
+
+        let max_k: usize = 16;
+        let kmer_count = 128;
+        let mut rng = ChaCha20Rng::from_seed([32; 32]);
+
+        let mut seqs = Vec::<Vec<u8>>::new();
+        for _ in 0..kmer_count {
+            let kmer: Vec<u8> = (0..max_k).map(|_| match rng.next_u32() % 4 {
+                0 => b'A',
+                1 => b'C',
+                2 => b'G',
+                _ => b'T',
+            }).collect();
+            seqs.push(kmer);
+        }
+
+        seqs.sort();
+        seqs.dedup();
+
+        let (sbwt, lcs) = SbwtIndexBuilder::<BitPackedKmerSortingMem>::new()
+            .k(max_k).build_lcs(true)
+            .add_all_dummy_paths(true)
+            .build_select_support(true)
+            .run_from_vecs(&seqs);
+        let lcs = lcs.unwrap();
+
+        let pnsv_tuned = PnsvTuned::new_with_default_values(&sbwt, &lcs, max_k);
+
+        let sequence_stream = crate::util::VecSeqStream::new(&seqs);
+        let streaming_index = StreamingIndex {
+            extend_right: &sbwt,
+            contract_left: &pnsv_tuned,
+            n: sbwt.n_sets(),
+            k: max_k,
+        };
+
+        let vodbg = vodbg::VoDbg::new(&sbwt, &pnsv_tuned);
+        let counts = Counts::try_new_default(sequence_stream, &streaming_index, &vodbg).unwrap();
+        let mut buffer = Vec::<u8>::new();
+        let written = counts.serialize(&mut buffer).unwrap();
+        assert_eq!(buffer.len(), written);
+        let counts_loaded = Counts::load(&mut buffer.as_slice()).unwrap();
+        assert_eq!(counts, counts_loaded);
     }
 
     #[test]
