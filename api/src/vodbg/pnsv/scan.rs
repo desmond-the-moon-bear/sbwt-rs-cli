@@ -4,6 +4,8 @@ use simple_sds_sbwt::serialize::Serialize;
 use super::bp::nearest_neighbor_dictionary::NearestNeighbourDictionary as NND;
 use super::Pnsv;
 
+mod macros;
+
 pub type Word = wide::u8x32;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
