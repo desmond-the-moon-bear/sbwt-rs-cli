@@ -794,7 +794,7 @@ mod tests {
             .run_from_vecs(&seqs);
         let lcs = lcs.unwrap();
 
-        let pnsv_tuned = PnsvTuned::new_with_default_values(&sbwt, &lcs, max_k);
+        let pnsv_tuned = PnsvTuned::new_default(&sbwt, &lcs, max_k);
 
         let sequence_stream = crate::util::VecSeqStream::new(&seqs);
         let streaming_index = StreamingIndex {
@@ -840,7 +840,7 @@ mod tests {
             .run_from_vecs(&seqs);
         let lcs = lcs.unwrap();
 
-        let pnsv_tuned = PnsvTuned::new_with_default_values(&sbwt, &lcs, max_k);
+        let pnsv_tuned = PnsvTuned::new_default(&sbwt, &lcs, max_k);
 
         let sequence_stream = crate::util::VecSeqStream::new(&seqs);
         let streaming_index = StreamingIndex {
@@ -895,7 +895,7 @@ mod tests {
             .run_from_vecs(&seqs);
         let lcs = lcs.unwrap();
 
-        let pnsv_tuned = PnsvTuned::new_with_default_values(&sbwt, &lcs, max_k);
+        let pnsv_tuned = PnsvTuned::new_default(&sbwt, &lcs, max_k);
 
         let vodbg = vodbg::VoDbg::new(&sbwt, &pnsv_tuned);
 
@@ -967,7 +967,7 @@ mod tests {
             .run_from_vecs(&seqs);
         let lcs = lcs.unwrap();
 
-        let pnsv_tuned = PnsvTuned::new_with_default_values(&sbwt, &lcs, max_k);
+        let pnsv_tuned = PnsvTuned::new_default(&sbwt, &lcs, max_k);
 
         let vodbg = vodbg::VoDbg::new(&sbwt, &pnsv_tuned);
 

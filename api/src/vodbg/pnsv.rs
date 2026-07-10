@@ -138,7 +138,7 @@ impl PnsvTuned {
     pub const DEFAULT_SCAN_BOUND: usize = 16;
     pub const DEFAULT_FALLBACK_OVERLAP: usize = 2;
 
-    pub fn new_with_default_values(extend: &impl ExtendRight, lcs: &LcsArray, max_k: usize) -> Self {
+    pub fn new_default(extend: &impl ExtendRight, lcs: &LcsArray, max_k: usize) -> Self {
         Self::new(extend, lcs, max_k, Self::DEFAULT_SCAN_BOUND, Self::DEFAULT_FALLBACK_OVERLAP)
     }
 
@@ -284,7 +284,7 @@ pub struct PnsvSafe {
 impl PnsvSafe {
     pub const DEFAULT_SCAN_BOUND: usize = 16;
 
-    pub fn new_with_default_values(extend: &impl ExtendRight, lcs: &LcsArray, max_k: usize) -> Self {
+    pub fn new_default(extend: &impl ExtendRight, lcs: &LcsArray, max_k: usize) -> Self {
         Self::new(extend, lcs, max_k, Self::DEFAULT_SCAN_BOUND)
     }
 
@@ -371,6 +371,9 @@ impl Pnsv for PnsvSafe {
         if target_length <= self.ranges.max_target() {
             return self.ranges.previous(index, target_length);
         }
+        if self.scan_bound == 0 {
+            return self.wwt.previous(index, target_length);
+        }
         if !self.wwt.is_empty() {
             let result = self.lcs_simd.scan_left_bounded(index, target_length, self.scan_bound);
             match result {
@@ -387,6 +390,9 @@ impl Pnsv for PnsvSafe {
     fn next(&self, index: usize, target_length: usize) -> usize {
         if target_length <= self.ranges.max_target() {
             return self.ranges.next(index, target_length);
+        }
+        if self.scan_bound == 0 {
+            return self.wwt.next(index, target_length);
         }
         if !self.wwt.is_empty() {
             let result = self.lcs_simd.scan_right_bounded(index, target_length, self.scan_bound);
@@ -468,7 +474,7 @@ mod tests {
         let kmer_count: usize = u16::MAX as usize;
         let max_k: usize = 20;
         let (sbwt, lcs) = setup(kmer_count, max_k);
-        let pnsv_tuned = PnsvTuned::new_with_default_values(&sbwt, &lcs, max_k);
+        let pnsv_tuned = PnsvTuned::new_default(&sbwt, &lcs, max_k);
         let mut buffer = Vec::<u8>::new();
         let written = pnsv_tuned.serialize(&mut buffer).unwrap();
         assert_eq!(buffer.len(), written);
@@ -485,7 +491,7 @@ mod tests {
         let pnsv_safe = PnsvSafe::new(&sbwt, &lcs, max_k, 1);
         println!("pnsv_safe.ranges.max_target(): {}", pnsv_safe.ranges.max_target());
         println!("pnsv_safe.wwt.max_target():    {}", pnsv_safe.wwt.max_target());
-        let pnsv_tuned = PnsvTuned::new_with_default_values(&sbwt, &lcs, max_k);
+        let pnsv_tuned = PnsvTuned::new_default(&sbwt, &lcs, max_k);
         println!("pnsv_tuned.ranges.max_target(): {}", pnsv_tuned.ranges.max_target());
         println!("pnsv_tuned.matrix.max_target(): {}", pnsv_tuned.matrix.max_target());
         for target_length in min_k..=max_k {
