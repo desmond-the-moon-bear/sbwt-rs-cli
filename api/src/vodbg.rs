@@ -21,6 +21,11 @@ pub mod iter;
 /// Module for Previous and Next Smaller Value support.
 pub mod pnsv;
 pub mod benchmark;
+pub mod util {
+    pub fn bit_width(value: usize) -> usize {
+        64 - u64::leading_zeros(value as u64) as usize
+    }
+}
 
 use count::Counts;
 use simple_sds_sbwt::serialize::Serialize;
@@ -96,7 +101,7 @@ where
         let mut dummy_marks = BitVector::from(dummy_marks);// Rank9::new(dummy_marks);
         dummy_marks.enable_rank();
 
-        let bit_width = (64 - sbwt.k().leading_zeros()) as usize;
+        let bit_width = util::bit_width(sbwt.k());
         let mut dummy_lengths = IntVector::with_len(dummy_count, bit_width, 0).unwrap();
 
         // Second pass to calculate their depths now that we have their positions.

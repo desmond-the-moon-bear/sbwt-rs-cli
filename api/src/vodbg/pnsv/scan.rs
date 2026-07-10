@@ -4,23 +4,28 @@ use simple_sds_sbwt::serialize::Serialize;
 use super::bp::nearest_neighbor_dictionary::NearestNeighbourDictionary as NND;
 use super::Pnsv;
 
+pub mod augmented_bounded_scan;
 mod macros;
+use macros::define_variants;
 
-// pub type Word = wide::u8x32;
+pub use augmented_bounded_scan as abs;
 
 pub trait Scan: Sized {
     type Word;
     type Element;
     const LANES: usize;
     const BYTES_PER_ELEMENT: usize;
-    fn from_iterator<T, I>(input: I, n: usize) -> Self
-    where T: Into<Self::Element>, I: Iterator<Item = T>;
+    fn from_iterator<T, I>(input: I, n: usize, k: usize) -> Self
+    where T: Into<usize>, I: Iterator<Item = T>;
     fn scan_left(&self, index: usize, target_length: usize) -> usize;
     fn scan_right(&self, index: usize, target_length: usize) -> usize;
     fn scan_left_bounded(&self, index: usize, target_length: usize, bound: usize) -> Result<usize, usize>;
     fn scan_right_bounded(&self, index: usize, target_length: usize, bound: usize) -> Result<usize, usize>;
     fn serialize<W: std::io::Write>(&self, out: &mut W) -> std::io::Result<usize>;
     fn load<R: std::io::Read>(input: &mut R) -> std::io::Result<Self>;
+    fn lanes(&self) -> usize { Self::LANES }
+    fn bytes_per_element(&self) -> usize { Self::BYTES_PER_ELEMENT }
+    fn word_count(&self) -> usize;
     fn len(&self) -> usize;
     fn is_empty(&self) -> bool;
 }
@@ -35,430 +40,11 @@ impl<T: Scan> Pnsv for T {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LcsSimd {
-    pub words: Vec<wide::u8x32>,
-    pub n: usize,
-}
-
-impl LcsSimd {
-    const ZERO: [u8; Self::LANES] = [0; Self::LANES];
-}
-
-impl Scan for LcsSimd {
-    type Word = wide::u8x32;
-    type Element = u8;
-    const LANES: usize = Self::Word::LANES as usize;
-    const BYTES_PER_ELEMENT: usize = (Self::Word::BITS as u32 / u8::BITS) as usize / Self::LANES;
-
-    fn from_iterator<T, I>(input: I, n: usize) -> Self
-    where
-        T: Into<u8>,
-        I: Iterator<Item = T>,
-    {
-        let ten_percent = n / 10;
-        let mut border = ten_percent;
-        let mut percent_count = 0;
-
-        #[allow(clippy::manual_div_ceil)]
-        let mut words = Vec::with_capacity((n + Self::LANES - 1) / Self::LANES);
-        let mut array = Self::ZERO;
-        for (i, item) in input.enumerate() {
-            if i != 0 && i % Self::LANES == 0 {
-                words.push(Self::Word::new(array));
-                array = Self::ZERO;
-            }
-            array[i % Self::LANES] = item.into();
-
-            if i >= border {
-                border += ten_percent;
-                percent_count += 1;
-                log::info!("[LcsSimd] {}0%", percent_count);
-            }
-        }
-        words.push(Self::Word::new(array));
-
-        Self { words, n }
-    }
-
-    fn scan_left(&self, index: usize, target_length: usize) -> usize {
-        if index >= self.n {
-            return 0;
-        }
-
-        let target_length = target_length as Self::Element;
-        let word_index = index / Self::LANES;
-        let index_in_word = index % Self::LANES;
-
-        // Scan the values in the SIMD word the index is located in individually.
-        let near_word = self.words[word_index].as_array();
-        for i in (0..=index_in_word).rev() {
-            if near_word[i] < target_length {
-                return word_index * Self::LANES + i;
-            }
-        }
-
-        // Scan the rest of the words using SIMD operations.
-        for w in (0..word_index).rev() {
-            let comparison_result = self.words[w].simd_lt(target_length);
-            if !comparison_result.any() {
-                continue;
-            }
-            let bitmask = comparison_result.to_bitmask();
-            let rightmost_smaller_element = Self::LANES - 1 - bitmask.leading_zeros() as usize;
-            return w * Self::LANES + rightmost_smaller_element;
-        }
-
-        0
-    }
-
-    fn scan_right(&self, index: usize, target_length: usize) -> usize {
-        if index >= self.n {
-            return self.n;
-        }
-
-        let target_length = target_length as Self::Element;
-        let word_index = index / Self::LANES;
-        let index_in_word = index % Self::LANES;
-
-        // Similarly to the scan_left procedure, first scan values in the word the index is located
-        // in individually.
-        let near_word = self.words[word_index].as_array();
-        for i in index_in_word..Self::LANES {
-            if near_word[i] < target_length {
-                return word_index * Self::LANES + i;
-            }
-        }
-
-        // Then scan the rest of the words using SIMD.
-        for w in (word_index + 1)..self.words.len() {
-            let comparison_result = self.words[w].simd_lt(target_length);
-            if !comparison_result.any() {
-                continue;
-            }
-            let bitmask = comparison_result.to_bitmask();
-            let leftmost_smaller_element = bitmask.trailing_zeros() as usize;
-            let result = w * Self::LANES + leftmost_smaller_element;
-            return result.min(self.n);
-        }
-
-        self.n
-    }
-
-    /// Bound gives the maximum number of words to be scanned in addition to the one the index is located.
-    fn scan_left_bounded(&self, index: usize, target_length: usize, bound: usize) -> Result<usize, usize> {
-        if index >= self.n {
-            return Err(self.n);
-        }
-
-        let target_length = target_length as Self::Element;
-        let word_index = index / Self::LANES;
-        let index_in_word = index % Self::LANES;
-
-        // Scan the values in the SIMD word the index is located in individually.
-        let near_word = self.words[word_index].as_array();
-        for i in (0..=index_in_word).rev() {
-            if near_word[i] < target_length {
-                return Ok(word_index * Self::LANES + i);
-            }
-        }
-
-        let lower_bound_word_index = word_index.saturating_sub(bound);
-
-        // Scan the rest of the words using SIMD operations.
-        for w in (lower_bound_word_index..word_index).rev() {
-            let comparison_result = self.words[w].simd_lt(target_length);
-            if !comparison_result.any() {
-                continue;
-            }
-            let bitmask = comparison_result.to_bitmask();
-            let rightmost_smaller_element = Self::LANES - 1 - bitmask.leading_zeros() as usize;
-            return Ok(w * Self::LANES + rightmost_smaller_element);
-        }
-
-        Err(lower_bound_word_index * Self::LANES)
-    }
-
-    /// Bound gives the maximum number of words to be scanned in addition to the one the index is located.
-    fn scan_right_bounded(&self, index: usize, target_length: usize, bound: usize) -> Result<usize, usize> {
-        if index >= self.n {
-            return Err(self.n);
-        }
-
-        let target_length = target_length as Self::Element;
-        let word_index = index / Self::LANES;
-        let index_in_word = index % Self::LANES;
-
-        // Similarly to the scan_left procedure, first scan values in the word the index is located
-        // in individually.
-        let near_word = self.words[word_index].as_array();
-        for i in index_in_word..Self::LANES {
-            if near_word[i] < target_length {
-                return Ok(word_index * Self::LANES + i);
-            }
-        }
-
-        let mut upper_bound_word_index = (word_index + bound).min(self.words.len());
-        if upper_bound_word_index < self.words.len() {
-            upper_bound_word_index += 1;
-        }
-
-        // Then scan the rest of the words using SIMD.
-        for w in (word_index + 1)..upper_bound_word_index {
-            let comparison_result = self.words[w].simd_lt(target_length);
-            if !comparison_result.any() {
-                continue;
-            }
-            let bitmask = comparison_result.to_bitmask();
-            let leftmost_smaller_element = bitmask.trailing_zeros() as usize;
-            let result = w * Self::LANES + leftmost_smaller_element;
-            return Ok(result.min(self.n));
-        }
-
-        Err(upper_bound_word_index * Self::LANES - 1)
-    }
-
-    fn serialize<W: std::io::Write>(&self, out: &mut W) -> std::io::Result<usize> {
-        log::info!("[LcsSimd::load] serializing...");
-        let mut written: usize = 0;
-        out.write_all(&(self.n as u64).to_le_bytes())?;
-        written += size_of::<u64>();
-        for word in &self.words {
-            for element in word.to_array() {
-                out.write_all(&element.to_le_bytes())?;
-            }
-        }
-        written += self.words.len() * Self::LANES * Self::BYTES_PER_ELEMENT;
-        Ok(written)
-    }
-
-    fn load<R: std::io::Read>(input: &mut R) -> std::io::Result<Self> {
-        log::info!("[LcsSimd::load] loading...");
-        let n = u64::from_le(u64::load(input)?) as usize;
-        #[allow(clippy::manual_div_ceil)]
-        let word_count = (n + Self::LANES - 1) / Self::LANES;
-        let mut words: Vec<Self::Word> = Vec::with_capacity(word_count);
-        let mut array = Self::ZERO;
-        let mut bytes = [0; Self::BYTES_PER_ELEMENT];
-        for _ in 0..word_count {
-            for i in 0..Self::LANES {
-                input.read_exact(&mut bytes)?;
-                array[i] = u8::from_le_bytes(bytes);
-            }
-            words.push(Self::Word::new(array));
-        }
-        let result = Self {
-            words,
-            n
-        };
-        Ok(result)
-    }
-
-    #[inline]
-    fn len(&self) -> usize {
-        self.n
-    }
-
-    #[inline]
-    fn is_empty(&self) -> bool {
-        self.n == 0
-    }
-}
-
-/// Performs a bounded SIMD scan to find a previous/next smaller value. If the scan fails it falls
-/// back to a NND on a bitvector which marks the first and last values which are smaller than a
-/// given target length in each region determined by a SIMD word.
-pub struct AugmentedBoundedScan {
-    pub lcs_simd: LcsSimd,
-    pub target_length_lower: usize,
-    pub target_length_upper: usize,
-    pub scan_word_bound: usize,
-    pub levels: Vec<NND<16>>,
-}
-
-impl AugmentedBoundedScan {
-    pub fn from_iterator<T, I>(lcs_simd: LcsSimd, input: I, scan_word_bound: usize, target_length_lower: usize, target_length_upper: usize) -> Self
-    where
-        T: Into<usize>,
-        I: Iterator<Item = T> + Clone,
-    {
-        let n = lcs_simd.len();
-        let mut levels = Vec::with_capacity(target_length_upper - target_length_lower + 1);
-
-        for target_length in target_length_lower..=target_length_upper {
-            let select = SelectFromSimdWord::new(input.clone(), n, target_length);
-            let nnd: NND<16> = NND::new(select, n);
-            levels.push(nnd);
-        }
-
-        Self {
-            lcs_simd,
-            target_length_lower,
-            target_length_upper,
-            scan_word_bound,
-            levels
-        }
-    }
-}
-
-impl Pnsv for AugmentedBoundedScan {
-    fn previous(&self, index: usize, target_length: usize) -> usize {
-        if target_length > self.target_length_upper {
-            return self.lcs_simd.scan_left(index, target_length);
-        }
-        let result = self.lcs_simd.scan_left_bounded(index, target_length, self.scan_word_bound);
-        match result {
-            Ok(index) => index,
-            Err(continue_search_index) => {
-                let nnd_index = target_length - self.target_length_lower;
-                if nnd_index < self.levels.len() {
-                    self.levels[nnd_index].previous(continue_search_index)
-                } else {
-                    index
-                }
-            }
-        }
-    }
-
-    fn next(&self, index: usize, target_length: usize) -> usize {
-        if target_length > self.target_length_upper {
-            return self.lcs_simd.scan_right(index, target_length);
-        }
-        let result = self.lcs_simd.scan_right_bounded(index, target_length, self.scan_word_bound);
-        match result {
-            Ok(index) => index,
-            Err(continue_search_index) => {
-                let nnd_index = target_length - self.target_length_lower;
-                if nnd_index < self.levels.len() {
-                    self.levels[nnd_index].next(continue_search_index)
-                } else {
-                    index
-                }
-            }
-        }
-    }
-    
-    #[inline]
-    fn max_target(&self) -> usize {
-        self.target_length_upper
-    }
-}
-
-// An iterator over the indices of the first and last value in each simd word smaller than a given
-// target length.
-struct SelectFromSimdWord<T, I>
-where 
-    T: Into<usize>,
-    I: Iterator<Item = T> + Clone
-{
-    target_length: usize,
-    index: usize,
-    previous_index_of_smaller: usize,
-    last_yielded: usize,
-    count: usize,
-    pending: Option<usize>,
-    underlying_values: I,
-}
-
-// note(mk): The purpose of this iterator is only to construct a Nearest Neighbour Dictionary out
-// of the first and last values which are smaller than the given target length in each SIMD word.
-// Since the SIMD scan always ends on a border between two words, then the answer to a query in the
-// NND will always be the first or last smaller value. Therefore, there is no need to store any
-// 1-bits inbetween.
-impl<T, I> SelectFromSimdWord<T, I> 
-where 
-    T: Into<usize>,
-    I: Iterator<Item = T> + Clone
-{
-    fn new(underlying_values: I, count: usize, target_length: usize) -> Self {
-        Self {
-            target_length,
-            index: 0,
-            previous_index_of_smaller: count,
-            last_yielded: count + 1,
-            count,
-            pending: None,
-            underlying_values,
-        }
-    }
-}
-
-impl<T, I> Iterator for SelectFromSimdWord<T, I>
-where 
-    T: Into<usize>,
-    I: Iterator<Item = T> + Clone
-{
-    type Item = usize;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.pending.is_some() {
-            self.last_yielded = self.pending.unwrap();
-            return self.pending.take();
-        }
-
-        if self.index == self.count {
-            return None;
-        }
-
-        #[allow(clippy::while_let_on_iterator)]
-        while let Some(value) = self.underlying_values.next() {
-            let value = value.into();
-
-            let index = self.index;
-            self.index += 1;
-
-            if value >= self.target_length {
-                continue;
-            }
-
-            let previous_index_of_smaller = self.previous_index_of_smaller;
-            self.previous_index_of_smaller = index;
-
-            if previous_index_of_smaller < self.count {
-                let previous_word = previous_index_of_smaller / LcsSimd::LANES;
-                let current_word = index / LcsSimd::LANES;
-
-                if previous_word != current_word {
-                    if self.last_yielded == previous_index_of_smaller {
-                        self.last_yielded = index;
-                        return Some(index);
-                    } else {
-                        self.pending = Some(index);
-                        // note(mk): This next line is probably not necessary.
-                        self.last_yielded = previous_index_of_smaller;
-                        return Some(previous_index_of_smaller);
-                    }
-                }
-            } else {
-                return Some(index);
-            }
-        }
-
-        if self.previous_index_of_smaller < self.count && self.previous_index_of_smaller != self.last_yielded {
-            return Some(self.previous_index_of_smaller);
-        }
-
-        None
-    }
-}
-
-// note(mk): There were some errors with the automatically derived trait. 
-impl<T, I> Clone for SelectFromSimdWord<T, I>
-where 
-    T: Into<usize>,
-    I: Iterator<Item = T> + Clone
-{
-    fn clone(&self) -> Self {
-        Self {
-            target_length: self.target_length,
-            index: self.index,
-            previous_index_of_smaller: self.previous_index_of_smaller,
-            last_yielded: self.last_yielded,
-            count: self.count,
-            pending: self.pending,
-            underlying_values: self.underlying_values.clone()
-        }
-    }
+define_variants! {
+    LcsSimd;
+    LcsSimd8x32, wide::u8x32, u8;
+    LcsSimd16x32, wide::u16x32, u16;
+    LcsSimd32x16, wide::u32x16, u32;
 }
 
 #[cfg(test)]
@@ -466,302 +52,292 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lcs_simd_serialize_and_load() {
-        let items: &[u8] = &[
-            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
-            24, 25, 26, 27, 28, 29, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
-        ];
-        let lcs_simd = LcsSimd::from_iterator(items.iter().cloned(), items.len());
-        let mut buffer = Vec::<u8>::new();
-        let written = lcs_simd.serialize(&mut buffer).unwrap();
-        assert_eq!(buffer.len(), written);
-        let lcs_simd_loaded = LcsSimd::load(&mut buffer.as_slice()).unwrap();
-        assert_eq!(lcs_simd, lcs_simd_loaded);
+    fn definition_order_is_correct() {
+        let items: &[u8] = &[0, 1, 2, 3];
+        let lcs_simd_1 = LcsSimd::from_iterator(items.iter().cloned(), items.len(), 255);
+        let lcs_simd_2 = LcsSimd::from_iterator(items.iter().cloned(), items.len(), 1 << 8);
+        let lcs_simd_4 = LcsSimd::from_iterator(items.iter().cloned(), items.len(), 1 << 16);
+        assert_eq!(lcs_simd_1.bytes_per_element(), 1);
+        assert_eq!(lcs_simd_2.bytes_per_element(), 2);
+        assert_eq!(lcs_simd_4.bytes_per_element(), 4);
+    }
+
+    macro_rules! serialize_and_load_body {
+        ($structure:ty, $max_k:expr) => {{
+            let items: &[u8] = &[
+                0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+                24, 25, 26, 27, 28, 29, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
+            ];
+            let lcs_simd = <$structure>::from_iterator(items.iter().cloned(), items.len(), $max_k);
+            let mut buffer = Vec::<u8>::new();
+            let written = lcs_simd.serialize(&mut buffer).unwrap();
+            assert_eq!(buffer.len(), written);
+            let lcs_simd_loaded = <$structure>::load(&mut buffer.as_slice()).unwrap();
+            assert_eq!(lcs_simd, lcs_simd_loaded);
+        }};
     }
 
     #[test]
-    fn lcs_simd_words_are_correct() {
-        let items: &[u8] = &[
-            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
-            24, 25, 26, 27, 28, 29, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
-        ];
-
-        let lcs_simd = LcsSimd::from_iterator(items.iter().cloned(), items.len());
-        for i in 0..items.len() {
-            let item_in_word = lcs_simd.words[i / LcsSimd::LANES].as_array()[i % LcsSimd::LANES];
-            assert_eq!(items[i], item_in_word);
-        }
+    fn serialize_and_load() {
+        serialize_and_load_body!(LcsSimd8x32, 31);
+        serialize_and_load_body!(LcsSimd16x32, 1<<8);
+        serialize_and_load_body!(LcsSimd32x16, 1<<16);
+        serialize_and_load_body!(LcsSimd, 31);
+        serialize_and_load_body!(LcsSimd, 1<<8);
+        serialize_and_load_body!(LcsSimd, 1<<16);
     }
 
-    #[test]
-    fn lcs_simd_scan_left() {
-        let items: &[u8] = &[
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 1, 5, 5, 5, 5, 5, 5, // 25: 1
-
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 2, 5, 5, 5, 5, 5, 5, // 57: 2
-
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 5, 5, 5, 5, 5, 5, // 89: 3
-
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 4, 5, 5, 5, 5, 5, 5, // 121: 4
-        ];
-
-        let lcs_simd = LcsSimd::from_iterator(items.iter().cloned(), items.len());
-        assert_eq!(
-            lcs_simd.previous(125, 5),
-            121,
-            "Result in the same SIMD word failed."
-        );
-        assert_eq!(
-            lcs_simd.previous(100, 5),
-            89,
-            "Result in the previous SIMD word failed."
-        );
-        assert_eq!(lcs_simd.previous(100, 4), 89, "Smaller than 4 failed.");
-        assert_eq!(lcs_simd.previous(100, 3), 57, "Smaller than 3 failed.");
-        assert_eq!(lcs_simd.previous(100, 2), 25, "Smaller than 2 failed.");
-        assert_eq!(lcs_simd.previous(100, 1), 0, "Scan to beginning failed.");
-    }
-
-    #[test]
-    fn lcs_simd_scan_right() {
-        let items: &[u8] = &[
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 4, 5, 5, 5, 5, 5, 5, // 25: 4
-
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 5, 5, 5, 5, 5, 5, // 57: 3
-
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 2, 5, 5, 5, 5, 5, 5, // 89: 2
-
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 1, 5, 5, 5, 5, 5, 5, // 121: 1
-        ];
-
-        let lcs_simd = LcsSimd::from_iterator(items.iter().cloned(), items.len());
-        assert_eq!(
-            lcs_simd.next(20, 5),
-            25,
-            "Result in the same SIMD word failed."
-        );
-        assert_eq!(
-            lcs_simd.next(30, 5),
-            57,
-            "Result in the next SIMD word failed."
-        );
-        assert_eq!(lcs_simd.next(30, 4), 57, "Smaller than 4 failed.");
-        assert_eq!(lcs_simd.next(30, 3), 89, "Smaller than 3 failed.");
-        assert_eq!(lcs_simd.next(30, 2), 121, "Smaller than 2 failed.");
-        assert_eq!(lcs_simd.next(30, 1), items.len(), "Scan to the end failed.");
-    }
-
-    #[test]
-    fn lcs_simd_scan_left_bounded() {
-        let items: &[u8] = &[
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 1, 5, 5, 5, 5, 5, 5, // 25: 1
-
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 2, 5, 5, 5, 5, 5, 5, // 57: 2
-
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 5, 5, 5, 5, 5, 5, // 89: 3
-
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 4, 5, 5, 5, 5, 5, 5, // 121: 4
-        ];
-
-        let lcs_simd = LcsSimd::from_iterator(items.iter().cloned(), items.len());
-        let max_bound = lcs_simd.words.len();
-        assert_eq!(
-            lcs_simd.scan_left_bounded(125, 5, max_bound),
-            Ok(121),
-            "Result in the same SIMD word failed."
-        );
-        assert_eq!(
-            lcs_simd.scan_left_bounded(100, 5, max_bound),
-            Ok(89),
-            "Result in the previous SIMD word failed."
-        );
-        assert_eq!(
-            lcs_simd.scan_left_bounded(100, 4, max_bound),
-            Ok(89),
-            "Smaller than 4 failed."
-        );
-        assert_eq!(
-            lcs_simd.scan_left_bounded(100, 3, max_bound),
-            Ok(57),
-            "Smaller than 3 failed."
-        );
-        assert_eq!(
-            lcs_simd.scan_left_bounded(100, 2, max_bound),
-            Ok(25),
-            "Smaller than 2 failed."
-        );
-        assert!(
-            lcs_simd.scan_left_bounded(100, 1, max_bound).is_err(),
-            "Scan to beginning failed."
-        );
-
-        assert!(lcs_simd.scan_left_bounded(100, 5, 0).is_err());
-        assert!(lcs_simd.scan_left_bounded(100, 4, 0).is_err());
-        assert!(lcs_simd.scan_left_bounded(100, 3, 1).is_err());
-        assert!(lcs_simd.scan_left_bounded(100, 2, 2).is_err());
-
-        assert_eq!(lcs_simd.scan_left_bounded(125, 5, 0), Ok(121));
-        assert_eq!(lcs_simd.scan_left_bounded(100, 5, 1), Ok(89));
-        assert_eq!(lcs_simd.scan_left_bounded(100, 4, 1), Ok(89));
-        assert_eq!(lcs_simd.scan_left_bounded(100, 3, 2), Ok(57));
-        assert_eq!(lcs_simd.scan_left_bounded(100, 2, 3), Ok(25));
-    }
-
-    #[test]
-    fn lcs_simd_scan_right_bounded() {
-        let items: &[u8] = &[
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 4, 5, 5, 5, 5, 5, 5, // 25: 4
-
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 5, 5, 5, 5, 5, 5, // 57: 3
-
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 2, 5, 5, 5, 5, 5, 5, // 89: 2
-
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 1, 5, 5, 5, 5, 5, 5, // 121: 1
-        ];
-
-        let lcs_simd = LcsSimd::from_iterator(items.iter().cloned(), items.len());
-        let max_bound = lcs_simd.words.len();
-        assert_eq!(
-            lcs_simd.scan_right_bounded(20, 5, max_bound),
-            Ok(25),
-            "Result in the same SIMD word failed."
-        );
-        assert_eq!(
-            lcs_simd.scan_right_bounded(30, 5, max_bound),
-            Ok(57),
-            "Result in the next SIMD word failed."
-        );
-        assert_eq!(
-            lcs_simd.scan_right_bounded(30, 4, max_bound),
-            Ok(57),
-            "Smaller than 4 failed."
-        );
-        assert_eq!(
-            lcs_simd.scan_right_bounded(30, 3, max_bound),
-            Ok(89),
-            "Smaller than 3 failed."
-        );
-        assert_eq!(
-            lcs_simd.scan_right_bounded(30, 2, max_bound),
-            Ok(121),
-            "Smaller than 2 failed."
-        );
-        assert!(
-            lcs_simd.scan_right_bounded(30, 1, max_bound).is_err(),
-            "Scan to the end failed."
-        );
-
-        assert!(lcs_simd.scan_right_bounded(30, 5, 0).is_err());
-        assert!(lcs_simd.scan_right_bounded(30, 4, 0).is_err());
-        assert!(lcs_simd.scan_right_bounded(30, 3, 1).is_err());
-        assert!(lcs_simd.scan_right_bounded(30, 2, 2).is_err());
-
-        assert_eq!(lcs_simd.scan_right_bounded(20, 5, 0), Ok(25));
-        assert_eq!(lcs_simd.scan_right_bounded(30, 5, 1), Ok(57));
-        assert_eq!(lcs_simd.scan_right_bounded(30, 4, 1), Ok(57));
-        assert_eq!(lcs_simd.scan_right_bounded(30, 3, 2), Ok(89));
-        assert_eq!(lcs_simd.scan_right_bounded(30, 2, 3), Ok(121));
-    }
-
-    #[test]
-    fn select_from_simd_word() {
-        let items: &[u8] = &[
-            4, 3, 2, 1, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 1, 2, 3, 4,
-
-            4, 3, 2, 1, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 1, 2, 3, 4,
-
-            4, 3, 2, 1, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 1, 2, 3, 4,
-
-            4, 3, 2, 1, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 1, 2, 3, 4,
-
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-
-            1, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-
-            1, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-        ];
-
-        let less_than_5: Vec<usize> = SelectFromSimdWord::new(items.iter().cloned(), items.len(), 5).collect();
-        let less_than_4: Vec<usize> = SelectFromSimdWord::new(items.iter().cloned(), items.len(), 4).collect();
-        let less_than_3: Vec<usize> = SelectFromSimdWord::new(items.iter().cloned(), items.len(), 3).collect();
-        let less_than_2: Vec<usize> = SelectFromSimdWord::new(items.iter().cloned(), items.len(), 2).collect();
-
-        assert_eq!(less_than_5, &[0, 31, 32, 63, 64, 95, 96, 127, 160, 192]);
-        assert_eq!(less_than_4, &[1, 30, 33, 62, 65, 94, 97, 126, 160, 192]);
-        assert_eq!(less_than_3, &[2, 29, 34, 61, 66, 93, 98, 125, 160, 192]);
-        assert_eq!(less_than_2, &[3, 28, 35, 60, 67, 92, 99, 124, 160, 192]);
-    }
-
-    #[test]
-    fn bounded_scan_with_fallback() {
-        let items: &[u8] = &[
-            4, 3, 2, 1, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 1, 2, 3, 4,
-
-            4, 3, 2, 1, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 1, 2, 3, 4,
-
-            4, 3, 2, 1, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 1, 2, 3, 4,
-
-            4, 3, 2, 1, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 1, 2, 3, 4,
-
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-
-            1, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-
-            1, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-            5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-        ];
-
-        let target_length_lower = 2;
-        let target_length_upper = 5;
-
-        let lcs_simd = LcsSimd::from_iterator(items.iter().cloned(), items.len());
-        let abs = AugmentedBoundedScan::from_iterator(lcs_simd.clone(), items.iter().cloned(), 0, target_length_lower, target_length_upper);
-
-        for target_length in target_length_lower..=target_length_upper+1 {
+    macro_rules! words_are_correct_body {
+        ($structure:ty, $max_k:expr, $element:ty) => {{
+            let items: &[u8] = &[
+                0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+                24, 25, 26, 27, 28, 29, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
+            ];
+            let lcs_simd = <$structure>::from_iterator(items.iter().cloned(), items.len(), 31);
+            let lanes = <$structure as Scan>::LANES;
             for i in 0..items.len() {
-                assert_eq!(
-                    abs.previous(i, target_length),
-                    lcs_simd.previous(i, target_length),
-                    "previous; i: {}; target_length: {}",
-                    i, target_length
-                );
-                assert_eq!(
-                    abs.next(i, target_length),
-                    lcs_simd.next(i, target_length),
-                    "next; i: {}; target_length: {}",
-                    i, target_length
-                );
+                let item_in_word = lcs_simd.words[i / lanes].as_array()[i % lanes];
+                assert_eq!(items[i] as $element, item_in_word);
             }
-        }
+        }};
+    }
+    #[test]
+    fn words_are_correct() {
+        words_are_correct_body!(LcsSimd8x32, 31, u8);
+        words_are_correct_body!(LcsSimd16x32, 1<<8, u16);
+        words_are_correct_body!(LcsSimd32x16, 1<<16, u32);
+    }
 
+    macro_rules! scan_left_body {
+        ($structure:ty, $max_k:expr) => {{
+            let items: &[u8] = &[
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 1, 5, 5, 5, 5, 5, 5, // 25: 1
+
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 2, 5, 5, 5, 5, 5, 5, // 57: 2
+
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 5, 5, 5, 5, 5, 5, // 89: 3
+
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 4, 5, 5, 5, 5, 5, 5, // 121: 4
+            ];
+
+            let lcs_simd = <$structure>::from_iterator(items.iter().cloned(), items.len(), $max_k);
+            assert_eq!(
+                lcs_simd.previous(125, 5),
+                121,
+                "Result in the same SIMD word failed."
+            );
+            assert_eq!(
+                lcs_simd.previous(100, 5),
+                89,
+                "Result in the previous SIMD word failed."
+            );
+            assert_eq!(lcs_simd.previous(100, 4), 89, "Smaller than 4 failed.");
+            assert_eq!(lcs_simd.previous(100, 3), 57, "Smaller than 3 failed.");
+            assert_eq!(lcs_simd.previous(100, 2), 25, "Smaller than 2 failed.");
+            assert_eq!(lcs_simd.previous(100, 1), 0, "Scan to beginning failed.");
+        }};
+    }
+
+    #[test]
+    fn scan_left() {
+        scan_left_body!(LcsSimd8x32, 31);
+        scan_left_body!(LcsSimd16x32, 1<<8);
+        scan_left_body!(LcsSimd32x16, 1<<16);
+        scan_left_body!(LcsSimd, 31);
+        scan_left_body!(LcsSimd, 1<<8);
+        scan_left_body!(LcsSimd, 1<<16);
+    }
+
+    macro_rules! scan_right_body {
+        ($structure:ty, $max_k:expr) => {{
+            let items: &[u8] = &[
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 4, 5, 5, 5, 5, 5, 5, // 25: 4
+
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 5, 5, 5, 5, 5, 5, // 57: 3
+
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 2, 5, 5, 5, 5, 5, 5, // 89: 2
+
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 1, 5, 5, 5, 5, 5, 5, // 121: 1
+            ];
+
+            let lcs_simd = <$structure>::from_iterator(items.iter().cloned(), items.len(), $max_k);
+            assert_eq!(
+                lcs_simd.next(20, 5),
+                25,
+                "Result in the same SIMD word failed."
+            );
+            assert_eq!(
+                lcs_simd.next(30, 5),
+                57,
+                "Result in the next SIMD word failed."
+            );
+            assert_eq!(lcs_simd.next(30, 4), 57, "Smaller than 4 failed.");
+            assert_eq!(lcs_simd.next(30, 3), 89, "Smaller than 3 failed.");
+            assert_eq!(lcs_simd.next(30, 2), 121, "Smaller than 2 failed.");
+            assert_eq!(lcs_simd.next(30, 1), items.len(), "Scan to the end failed.");
+        }};
+    }
+
+    #[test]
+    fn scan_right() {
+        scan_right_body!(LcsSimd8x32, 31);
+        scan_right_body!(LcsSimd16x32, 1<<8);
+        scan_right_body!(LcsSimd32x16, 1<<16);
+        scan_right_body!(LcsSimd, 31);
+        scan_right_body!(LcsSimd, 1<<8);
+        scan_right_body!(LcsSimd, 1<<16);
+    }
+
+    macro_rules! scan_left_bounded_body {
+        ($structure:ty, $max_k:expr) => {{
+            let items: &[u8] = &[
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 1, 5, 5, 5, 5, 5, 5, // 25: 1
+
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 2, 5, 5, 5, 5, 5, 5, // 57: 2
+
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 5, 5, 5, 5, 5, 5, // 89: 3
+
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 4, 5, 5, 5, 5, 5, 5, // 121: 4
+            ];
+
+            let lcs_simd = <$structure>::from_iterator(items.iter().cloned(), items.len(), $max_k);
+            let max_bound = lcs_simd.word_count();
+            assert_eq!(
+                lcs_simd.scan_left_bounded(125, 5, max_bound),
+                Ok(121),
+                "Result in the same SIMD word failed."
+            );
+            assert_eq!(
+                lcs_simd.scan_left_bounded(100, 5, max_bound),
+                Ok(89),
+                "Result in the previous SIMD word failed."
+            );
+            assert_eq!(
+                lcs_simd.scan_left_bounded(100, 4, max_bound),
+                Ok(89),
+                "Smaller than 4 failed."
+            );
+            assert_eq!(
+                lcs_simd.scan_left_bounded(100, 3, max_bound),
+                Ok(57),
+                "Smaller than 3 failed."
+            );
+            assert_eq!(
+                lcs_simd.scan_left_bounded(100, 2, max_bound),
+                Ok(25),
+                "Smaller than 2 failed."
+            );
+            assert!(
+                lcs_simd.scan_left_bounded(100, 1, max_bound).is_err(),
+                "Scan to beginning failed."
+            );
+
+            let bound_multiplier = 32 / lcs_simd.lanes(); 
+            assert!(lcs_simd.scan_left_bounded(100, 5, 0 * bound_multiplier).is_err());
+            assert!(lcs_simd.scan_left_bounded(100, 4, 0 * bound_multiplier).is_err());
+            assert!(lcs_simd.scan_left_bounded(100, 3, 1 * bound_multiplier).is_err());
+            assert!(lcs_simd.scan_left_bounded(100, 2, 2 * bound_multiplier).is_err());
+
+            assert_eq!(lcs_simd.scan_left_bounded(125, 5, 0 * bound_multiplier), Ok(121));
+            assert_eq!(lcs_simd.scan_left_bounded(100, 5, 1 * bound_multiplier), Ok(89));
+            assert_eq!(lcs_simd.scan_left_bounded(100, 4, 1 * bound_multiplier), Ok(89));
+            assert_eq!(lcs_simd.scan_left_bounded(100, 3, 2 * bound_multiplier), Ok(57));
+            assert_eq!(lcs_simd.scan_left_bounded(100, 2, 3 * bound_multiplier), Ok(25));
+        }};
+    }
+
+    #[test]
+    fn scan_left_bounded() {
+        scan_left_bounded_body!(LcsSimd8x32, 31);
+        scan_left_bounded_body!(LcsSimd16x32, 1<<8);
+        scan_left_bounded_body!(LcsSimd32x16, 1<<16);
+        scan_left_bounded_body!(LcsSimd, 31);
+        scan_left_bounded_body!(LcsSimd, 1<<8);
+        scan_left_bounded_body!(LcsSimd, 1<<16);
+    }
+
+
+    macro_rules! scan_right_bounded_body {
+        ($structure:ty, $max_k:expr) => {{
+            let items: &[u8] = &[
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 4, 5, 5, 5, 5, 5, 5, // 25: 4
+
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 5, 5, 5, 5, 5, 5, // 57: 3
+
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 2, 5, 5, 5, 5, 5, 5, // 89: 2
+
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 1, 5, 5, 5, 5, 5, 5, // 121: 1
+            ];
+
+            let lcs_simd = <$structure>::from_iterator(items.iter().cloned(), items.len(), $max_k);
+            let max_bound = lcs_simd.word_count();
+            assert_eq!(
+                lcs_simd.scan_right_bounded(20, 5, max_bound),
+                Ok(25),
+                "Result in the same SIMD word failed."
+            );
+            assert_eq!(
+                lcs_simd.scan_right_bounded(30, 5, max_bound),
+                Ok(57),
+                "Result in the next SIMD word failed."
+            );
+            assert_eq!(
+                lcs_simd.scan_right_bounded(30, 4, max_bound),
+                Ok(57),
+                "Smaller than 4 failed."
+            );
+            assert_eq!(
+                lcs_simd.scan_right_bounded(30, 3, max_bound),
+                Ok(89),
+                "Smaller than 3 failed."
+            );
+            assert_eq!(
+                lcs_simd.scan_right_bounded(30, 2, max_bound),
+                Ok(121),
+                "Smaller than 2 failed."
+            );
+            assert!(
+                lcs_simd.scan_right_bounded(30, 1, max_bound).is_err(),
+                "Scan to the end failed."
+            );
+
+            let bound_multiplier = 32 / lcs_simd.lanes();
+            assert!(lcs_simd.scan_right_bounded(30, 5, 0 * bound_multiplier).is_err());
+            assert!(lcs_simd.scan_right_bounded(30, 4, 0 * bound_multiplier).is_err());
+            assert!(lcs_simd.scan_right_bounded(30, 3, 1 * bound_multiplier).is_err());
+            assert!(lcs_simd.scan_right_bounded(30, 2, 2 * bound_multiplier).is_err());
+
+            assert_eq!(lcs_simd.scan_right_bounded(20, 5, 0 * bound_multiplier), Ok(25));
+            assert_eq!(lcs_simd.scan_right_bounded(30, 5, 1 * bound_multiplier), Ok(57));
+            assert_eq!(lcs_simd.scan_right_bounded(30, 4, 1 * bound_multiplier), Ok(57));
+            assert_eq!(lcs_simd.scan_right_bounded(30, 3, 2 * bound_multiplier), Ok(89));
+            assert_eq!(lcs_simd.scan_right_bounded(30, 2, 3 * bound_multiplier), Ok(121));
+        }};
+    }
+
+    #[test]
+    fn scan_right_bounded() {
+        scan_right_bounded_body!(LcsSimd8x32, 31);
+        scan_right_bounded_body!(LcsSimd16x32, 1<<8);
+        scan_right_bounded_body!(LcsSimd32x16, 1<<16);
+        scan_right_bounded_body!(LcsSimd, 31);
+        scan_right_bounded_body!(LcsSimd, 1<<8);
+        scan_right_bounded_body!(LcsSimd, 1<<16);
     }
 }

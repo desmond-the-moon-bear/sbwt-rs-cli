@@ -234,7 +234,7 @@ mod tests {
         let max_k: usize = Ranges::MAX_K;
         let (sbwt, lcs) = setup(max_k);
         let iterator = (0..lcs.len()).map(|index| lcs.access(index) as u8);
-        let lcs_simd = LcsSimd::from_iterator(iterator, lcs.len());
+        let lcs_simd = LcsSimd::from_iterator(iterator, lcs.len(), max_k);
         let ranges = Ranges::new(&sbwt, lcs.len(), max_k);
         for target_length in min_k..=max_k {
             for i in 0..lcs.len() {

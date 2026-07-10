@@ -16,7 +16,7 @@ pub use balanced_parenthesis::LcsPnsvBp;
 pub use balanced_parenthesis::PnsvBp;
 pub use matrix::Matrix as PnsvMatrix;
 pub use ranges::Ranges;
-pub use scan::AugmentedBoundedScan as ABS;
+pub use scan::abs::AugmentedBoundedScan as ABS;
 pub use scan::LcsSimd;
 pub use wavelet::WindowedWaveletTree as WWT;
 use scan::Scan;
@@ -112,7 +112,7 @@ pub fn pnsv_abs_simd(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwned 
     let matrix_upper_bound = log_4 - TARGET_LENGTH_LOG_4_FLOOR; 
     
     log::info!("[pnsv_abs_simd] creating lcs simd...");
-    let lcs_simd = LcsSimd::from_iterator(iterator.clone(), count);
+    let lcs_simd = scan::LcsSimd8x32::from_iterator(iterator.clone(), count, 31);
 
     log::info!("[pnsv_abs_simd] creating augmented bounded scan...");
     let abs = ABS::from_iterator(lcs_simd, iterator, 8, ranges_upper_bound + 1, matrix_upper_bound);
@@ -172,7 +172,7 @@ impl PnsvTuned {
             }
             s.spawn(|_| {
                 log::info!("[PnsvTuned::new] creating lcs simd...");
-                let lcs_simd = LcsSimd::from_iterator(lcs_simd_iterator, count);
+                let lcs_simd = LcsSimd::from_iterator(lcs_simd_iterator, count, max_k);
                 lcs_simd_option = Some(lcs_simd);
             });
         });
@@ -320,7 +320,7 @@ impl PnsvSafe {
             });
             s.spawn(|_| {
                 log::info!("[PnsvSafe::new] creating lcs simd...");
-                let lcs_simd = LcsSimd::from_iterator(lcs_simd_iterator, count);
+                let lcs_simd = LcsSimd::from_iterator(lcs_simd_iterator, count, max_k);
                 lcs_simd_option = Some(lcs_simd);
             });
         });

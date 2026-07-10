@@ -1,7 +1,5 @@
 // Code by Martin Kostadinov adapted to Rust from the C++ library sdsl-lite.
 
-use super::util;
-
 use simple_sds_sbwt::{
     bit_vector::BitVector,
     int_vector::IntVector,
@@ -84,13 +82,13 @@ impl<const SAMPLE_OFFSET: usize> NearestNeighbourDictionary<SAMPLE_OFFSET> {
         // Store an additional element for the imaginary 1 immediately before the beginning of the
         // bitvector.
         let sample_bit_count = 1 + one_count / SAMPLE_OFFSET;
-        let sample_bit_position_bit_width = util::bit_width(bitvector_length);
+        let sample_bit_position_bit_width = crate::vodbg::util::bit_width(bitvector_length);
         let mut sample_bit_indices = IntVector::with_len(sample_bit_count, sample_bit_position_bit_width, 0)
             .expect("The sample_bit_position_bit_width should not be greater than 64.");
 
         // Skip storing the distance between the sampled bits and the previous 1 bit.
         let differences_count = one_count - one_count / SAMPLE_OFFSET;
-        let differences_bit_width = util::bit_width(max_distance_between_two_ones);
+        let differences_bit_width = crate::vodbg::util::bit_width(max_distance_between_two_ones);
         let mut differences = IntVector::with_len(differences_count, differences_bit_width, 0)
             .expect("The differences_bit_width should not be greater than 64.");
 
@@ -248,7 +246,7 @@ mod tests {
         }
 
         let bitvector: BitVector = raw_vector.into();
-        let ones = util::one_indices_iterator(bitvector.iter());
+        let ones = super::super::util::one_indices_iterator(bitvector.iter());
         NearestNeighbourDictionary::<SAMPLE_OFFSET>::new(ones, bitvector.len())
     }
 
