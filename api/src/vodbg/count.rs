@@ -1,3 +1,5 @@
+// Code by Martin Kostadinov.
+
 use crate::{ContractLeft, ExtendRight, SeqStream, StreamingIndex};
 
 use super::DummyInfo;
@@ -138,7 +140,8 @@ impl Counts {
     /// must always be one sequence producer thread and at least one sequence consumer thread i.e.
     /// the procedure will panic if thread_count is < 2. The additional memory bound does not
     /// include the size of the data working data structures, but is reserved for the streaming of
-    /// the input sequences. The batch size is in bytes.
+    /// the input sequences. The batch size is in bytes. Uses a concurrent hash map to store the
+    /// extra count of the counts which are greater than u8::MAX (i.e. "large counts").
     pub fn try_new_concurrent_with_hashmap<SS, E, C, D>(
         sequence_stream: SS,
         streaming_index: &StreamingIndex<'_, E, C>,
@@ -249,6 +252,8 @@ impl Counts {
         Some(result)
     }
 
+    /// Calculates the prefix sum array of the counts of the k-mers in the input sequences and the
+    /// number of large counts.
     fn process_sample_information(
         sample_distance: usize,
         sample_count: usize,
@@ -276,6 +281,13 @@ impl Counts {
         }
     }
 
+    /// Counts the number of occurrences of each k-mer in the input sequence concurrently. There
+    /// must always be one sequence producer thread and at least one sequence consumer thread i.e.
+    /// the procedure will panic if thread_count is < 2. The additional memory bound does not
+    /// include the size of the data working data structures, but is reserved for the streaming of
+    /// the input sequences. The batch size is in bytes. Makes two passes over the input sequence
+    /// to find the number of large counts in order to allocate the correct size of large_counts.
+    /// The second pass then populates the large counts.
     #[allow(unused)]
     pub fn try_new_concurrent_two_passes<SS, E, C, D>(
         sequence_stream: SS,
@@ -502,6 +514,7 @@ impl Counts {
     }
 }
 
+/// An iterator over all of the counts in the data structure.
 #[derive(Debug, Clone)]
 pub struct Iter<'a> {
     index: usize,
@@ -528,8 +541,8 @@ impl Iterator for Iter<'_> {
     }
 }
 
-/// A batch of input sequences. Idea borrowed from
-/// [`crate::bitpacked_kmer_sorting::kmer_splitter`].
+/// A batch of input sequences. Idea borrowed from the module kmer_splitter in
+/// [crate::bitpacked_kmer_sorting].
 struct Batch {
     buffer: Vec<u8>,
     bounds: Vec<usize>,
@@ -561,6 +574,8 @@ impl<'a> Iterator for BatchIterator<'a> {
     }
 }
 
+/// Reads the input sequences from the sequence stream and sends them in batches to the consumer
+/// threads.
 fn sequence_producer_thread<SS>(mut sequence_stream: SS, buffer_capacity: usize, output: Sender<Batch>)
 where SS: SeqStream + Send,
 {
@@ -604,6 +619,7 @@ where SS: SeqStream + Send,
     drop(output);
 }
 
+/// Used in [Counts::try_new_concurrent_with_hashmap].
 fn sequence_consumer_thread_with_hash_map<E, C, D>(
     input: Receiver<Batch>,
     streaming_index: &StreamingIndex<'_, E, C>,
@@ -668,6 +684,7 @@ where
     Ok(())
 }
 
+/// Used in [Counts::try_new_concurrent_two_passes].
 fn sequence_consumer_thread_first_pass<E, C, D>(
     input: Receiver<Batch>,
     streaming_index: &StreamingIndex<'_, E, C>,
@@ -722,6 +739,7 @@ where
     Ok(())
 }
 
+/// Used in [Counts::try_new_concurrent_two_passes].
 fn sequence_consumer_thread_second_pass<E, C>(
     input: Receiver<Batch>,
     streaming_index: &StreamingIndex<'_, E, C>,
@@ -756,6 +774,8 @@ where
     }
 }
 
+/// Finds the index of the large count in the large count array (since there is no trivial mapping
+/// from the index in the SBWT to the long counts).
 fn find_large_count_index(
     sample_distance: usize,
     individual_counts: &[u8],

@@ -23,17 +23,36 @@ use scan::Scan;
 
 use simple_sds_sbwt::serialize::Serialize;
 
-/// Previous/Next Smaller value.
+/// Previous/Next Smaller Value.
 pub trait Pnsv {
+    /// Given an index in the underlying LCS array and a target value, finds the previous index at
+    /// which the value in the LCS array is smaller. Notably, if the value at the given index is
+    /// smaller, the procedure returns that index. The data structures which implement this trait
+    /// return 0 if a smaller value is not found.
     fn previous(&self, index: usize, target_length: usize) -> usize;
+    /// The same as [Pnsv::previous], but returns the next smaller value. The semantics if the
+    /// value at the given index is already smaller than the given target value stay the same. The
+    /// data structures which implement this trait return the length of the LCS array if a smaller
+    /// value is not found.
     fn next(&self, index: usize, target_length: usize) -> usize;
+    /// If there is a more efficient way to implement the contract_left operation compared to the
+    /// default implementation change this method and [Pnsv::overriden_contract_left] to override
+    /// it.
     fn override_contract_left(&self) -> bool { false }
+    /// If there is a more efficient way to implement the contract_left operation compared to the
+    /// default implementation change this method and [Pnsv::override_contract_left] to override
+    /// it.
     #[allow(unused_variables)]
     fn overriden_contract_left(&self, I: std::ops::Range<usize>, target_len: usize) -> std::ops::Range<usize> { 0..0 }
+    /// The maximum target value this data structure supports. Mostly used by the hybrid PNSV data
+    /// structures to determine which inner PNSV data structure should handle the given querry.
     fn max_target(&self) -> usize { 0 }
 }
 
 impl<T: ?Sized + Pnsv> ContractLeft for T {
+    /// Finds the previous smaller value from the start of the range and the next smaller value
+    /// from the end of the range. Preserves the semantics described in [Pnsv]'s previous and next
+    /// methods.
     fn contract_left(&self, I: std::ops::Range<usize>, target_len: usize) -> std::ops::Range<usize> {
         if self.override_contract_left() {
             // note(mk): Godbolt says that if the method is "overriden" by changing the default
@@ -125,12 +144,26 @@ pub fn pnsv_abs_simd(extend: &impl ExtendRight, lcs: &LcsArray) -> PnsvDynOwned 
     }
 }
 
+/// A structure which supports previous/next smaller value queries on the LCS array. Internally
+/// uses [Ranges], [PnsvMatrix] and [LcsSimd] based on the target value for efficiency.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PnsvTuned {
+    //
+    // target values        : 1-------------------------------------------max_k
+    // ranges               : |------|
+    // matrix               :         |---------|
+    // lcs_simd (bounded)   :             |-----| (<--> == fallback_scan_overlap)
+    // lcs_simd (unbounded) :                    |------------------------|
+    //
     pub ranges: Ranges,
     pub matrix: PnsvMatrix,
     pub lcs_simd: LcsSimd,
+    /// The number of words apart from the word the index is already in should
+    /// [PnsvTuned::lcs_simd] will scan when performing a bounded scan.
     pub scan_bound: usize,
+    /// For how many values counting from the end of the range the [PnsvTuned::matrix] is
+    /// responsible for should [PnsvTuned] use a bounded scan before doing a query on
+    /// [PnsvTuned::matrix].
     pub fallback_scan_overlap: usize,
 }
 
@@ -138,10 +171,12 @@ impl PnsvTuned {
     pub const DEFAULT_SCAN_BOUND: usize = 16;
     pub const DEFAULT_FALLBACK_OVERLAP: usize = 2;
 
+    /// Constructs a [PnsvTuned] with default values.
     pub fn new_default(extend: &impl ExtendRight, lcs: &LcsArray, max_k: usize) -> Self {
         Self::new(extend, lcs, max_k, Self::DEFAULT_SCAN_BOUND, Self::DEFAULT_FALLBACK_OVERLAP)
     }
 
+    /// Constructs a [PnsvTuned] with the given parameters.
     pub fn new(extend: &impl ExtendRight, lcs: &LcsArray, max_k: usize, scan_bound: usize, mut fallback_scan_overlap: usize) -> Self {
         let count = lcs.len();
 
@@ -194,6 +229,7 @@ impl PnsvTuned {
         }
     }
 
+    /// Serializes this data structure in a binary format and returns the number of bytes written.
     pub fn serialize<W: std::io::Write>(&self, out: &mut W) -> std::io::Result<usize> {
         let mut written = 0;
         out.write_all(&(self.scan_bound as u64).to_le_bytes())?;
@@ -205,6 +241,7 @@ impl PnsvTuned {
         Ok(written)
     }
 
+    /// Loads this data structure from binary.
     pub fn load<R: std::io::Read>(input: &mut R) -> std::io::Result<Self> {
         let scan_bound = u64::from_le(u64::load(input)?) as usize;
         let fallback_scan_overlap = u64::from_le(u64::load(input)?) as usize;
@@ -273,8 +310,16 @@ impl Pnsv for PnsvTuned {
     }
 }
 
+/// A structure which supports previous/next smaller value queries on the LCS array. Internally
+/// uses [Ranges], [WWT] and [LcsSimd] based on the target value for efficiency.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PnsvSafe {
+    //
+    // target values        : 1-------------------------------------------max_k
+    // ranges               : |------|
+    // matrix               :         |-----------------------------------|
+    // lcs_simd (bounded)   :         |-----------------------------------|
+    //
     pub ranges: Ranges,
     pub wwt: WWT,
     pub lcs_simd: LcsSimd,
@@ -284,10 +329,12 @@ pub struct PnsvSafe {
 impl PnsvSafe {
     pub const DEFAULT_SCAN_BOUND: usize = 16;
 
+    /// Constructs a [PnsvSafe] with default values.
     pub fn new_default(extend: &impl ExtendRight, lcs: &LcsArray, max_k: usize) -> Self {
         Self::new(extend, lcs, max_k, Self::DEFAULT_SCAN_BOUND)
     }
 
+    /// Constructs a [PnsvSafe] with the given parameters.
     pub fn new(extend: &impl ExtendRight, lcs: &LcsArray, max_k: usize, scan_bound: usize) -> Self {
         let count = lcs.len();
 
@@ -341,6 +388,7 @@ impl PnsvSafe {
         }
     }
 
+    /// Serializes this data structure in a binary format and returns the number of bytes written.
     pub fn serialize<W: std::io::Write>(&self, out: &mut W) -> std::io::Result<usize> {
         let mut written = 0;
         out.write_all(&(self.scan_bound as u64).to_le_bytes())?;
@@ -351,6 +399,7 @@ impl PnsvSafe {
         Ok(written)
     }
 
+    /// Loads this data structure from binary.
     pub fn load<R: std::io::Read>(input: &mut R) -> std::io::Result<Self> {
         let scan_bound = u64::from_le(u64::load(input)?) as usize;
         let ranges = Ranges::load(input)?;
@@ -408,6 +457,7 @@ impl Pnsv for PnsvSafe {
     }
 }
 
+/// Constructs the [Ranges] with a dynamically chosen upper bound based on the max_k.
 pub fn make_ranges(extend: &impl ExtendRight, count: usize, max_k: usize) -> Ranges {
     let mut ranges_upper_bound = 0;
     let mut bits_in_current_level_of_ranges = usize::BITS as usize * 4;

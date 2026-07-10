@@ -1,5 +1,7 @@
 // Code by Martin Kostadinov.
 
+/// Prefer to use the [define_variants] macro in order to ensure all of the variants have a
+/// corresponding value in the enum defined by [define_variants_enum].
 macro_rules! define_scan {
     ($name:ident, $word:ty, $element:ty) => {
         #[derive(Clone, Debug, PartialEq, Eq)]
@@ -241,6 +243,8 @@ macro_rules! define_scan {
     };
 }
 
+/// Prefer to use the [define_variants] macro in order to ensure all of the variants have a
+/// corresponding value in the enum defined by [define_variants_enum].
 macro_rules! define_variants_enum {
     ($name:ident, $($variant:ident),+ $(,)?) => {
         #[derive(Clone, Debug, PartialEq, Eq)]

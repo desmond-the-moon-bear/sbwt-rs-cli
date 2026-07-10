@@ -15,17 +15,32 @@ pub trait Scan: Sized {
     type Element;
     const LANES: usize;
     const BYTES_PER_ELEMENT: usize;
+    /// Constructs the structure from an iterator.
     fn from_iterator<T, I>(input: I, n: usize, k: usize) -> Self
     where T: Into<usize>, I: Iterator<Item = T>;
+    /// Look at [Pnsv::previous].
     fn scan_left(&self, index: usize, target_length: usize) -> usize;
+    /// Look at [Pnsv::next].
     fn scan_right(&self, index: usize, target_length: usize) -> usize;
+    /// The same as [Scan::scan_left], however, the number of words which are scanned beyond the
+    /// first word (in which the index is located which is scanned element by element) is bounded.
     fn scan_left_bounded(&self, index: usize, target_length: usize, bound: usize) -> Result<usize, usize>;
+    /// The same as [Scan::scan_right], however, the number of words which are scanned beyond the
+    /// first word (in which the index is located which is scanned element by element) is bounded.
     fn scan_right_bounded(&self, index: usize, target_length: usize, bound: usize) -> Result<usize, usize>;
+    /// Serializes this data structure in a binary format and returns the number of bytes written.
     fn serialize<W: std::io::Write>(&self, out: &mut W) -> std::io::Result<usize>;
+    /// Loads this data structure from binary.
     fn load<R: std::io::Read>(input: &mut R) -> std::io::Result<Self>;
+    /// The number of lanes (elements) in the SIMD word this structure is using.
     fn lanes(&self) -> usize { Self::LANES }
+    /// How many bytes each element in the SIMD word has.
     fn bytes_per_element(&self) -> usize { Self::BYTES_PER_ELEMENT }
+    /// The number of words in the array. The word count times the number of lanes does not
+    /// necessarily equal the number of elements in the LCS array. The LCS array is padded with 0s
+    /// to make the number of elements 
     fn word_count(&self) -> usize;
+    /// The number of elements in the LCS array without the additional 0s.
     fn len(&self) -> usize;
     fn is_empty(&self) -> bool;
 }

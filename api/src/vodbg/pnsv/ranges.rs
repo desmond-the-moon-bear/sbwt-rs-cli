@@ -7,7 +7,8 @@ use crate::ExtendRight;
 use simple_sds_sbwt::serialize::Serialize;
 
 /// Precompute the ranges in the SBWT index for each suffix of length k up to a given number. Use
-/// those range borders to perform ContractLeft. Each level has at most O(4^k) border values.
+/// those range borders to perform ContractLeft. Each level has at most O(4^i) border values where
+/// i is the index of the level.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ranges {
     // note(mk): Maybe SIMD can be used here as well.

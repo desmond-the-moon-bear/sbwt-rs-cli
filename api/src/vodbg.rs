@@ -22,6 +22,7 @@ pub mod iter;
 pub mod pnsv;
 pub mod benchmark;
 pub mod util {
+    /// Given an integer, returns the minimum number of bits which are needed to store it.
     pub fn bit_width(value: usize) -> usize {
         64 - u64::leading_zeros(value as u64) as usize
     }
@@ -30,6 +31,8 @@ pub mod util {
 use count::Counts;
 use simple_sds_sbwt::serialize::Serialize;
 
+// A struct supporting de Bruijng graph operations on the k-mers stored in the SBWT. More notably
+// it supports changing the order i.e. the length of the string corresponding to a given node.
 #[derive(Clone, Debug)]
 pub struct VoDbg<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> {
     sbwt: &'a SbwtIndex<SS>,
@@ -144,13 +147,14 @@ where
     pub fn build_counts<Stream>(
         &mut self,
         sequence_stream: Stream,
+        use_hash_map: bool,
         sample_distance: usize,
         additional_memory_bound_gb: usize,
         thread_count: usize,
         batch_size: usize,
     ) -> Result<(), ()>
     where
-        Stream: crate::SeqStream + Send,
+        Stream: crate::SeqStream + Send + Clone,
     {
         if self.counts.is_some() {
             return Ok(());
@@ -161,15 +165,27 @@ where
             n: self.sbwt.n_sets(),
             k: self.sbwt.k(),
         };
-        let result = Counts::try_new_concurrent_with_hashmap(
-            sequence_stream,
-            &streaming_index,
-            self,
-            sample_distance,
-            additional_memory_bound_gb,
-            thread_count,
-            batch_size
-        );
+        let result = if use_hash_map {
+            Counts::try_new_concurrent_with_hashmap(
+                sequence_stream,
+                &streaming_index,
+                self,
+                sample_distance,
+                additional_memory_bound_gb,
+                thread_count,
+                batch_size
+            )
+        } else {
+            Counts::try_new_concurrent_two_passes(
+                sequence_stream,
+                &streaming_index,
+                self,
+                sample_distance,
+                additional_memory_bound_gb,
+                thread_count,
+                batch_size
+            )
+        };
         if let Some(counts) = result {
             self.counts = Some(counts);
             Ok(())
@@ -205,6 +221,17 @@ where
         let mut buf = Vec::<u8>::with_capacity(node.k);
         self.push_node_kmer(node, &mut buf);
         buf
+    }
+
+    /// Get the number of occurrences of the k-mer corresponding to the given k-mer. Support for
+    /// the [counts][VoDbg::build_counts] must have been called beforehand, otherwise this method
+    /// returns 0.
+    pub fn get_count(&self, node: Node) -> u64 {
+        if let Some(counts) = self.counts.as_ref() {
+            counts.range_sum(node.start, node.end)
+        } else {
+            0
+        }
     }
 
     /// Get a handle to the node corresponding to the given k-mer, if exists in the graph.
@@ -671,6 +698,7 @@ mod tests {
         let sequence_stream = crate::util::VecSeqStream::new(&seqs);
         vodbg.build_counts(
             sequence_stream,
+            true,
             Counts::DEFAULT_SAMPLE_DISTANCE,
             1, 4,
             Counts::DEFAULT_BATCH_SIZE_IN_BYTES

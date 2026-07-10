@@ -23,6 +23,9 @@ where
     }
 }
 
+/// An iterator over all of the nodes in the variable order de Bruijn graph with a given value k.
+/// Uses the information about the dummies in [VoDbg] and [Pnsv::next] to find the correct ranges
+/// for the nodes.
 #[derive(Clone, Debug)]
 pub struct NodeIterator<'a, P: Pnsv + Send + Sync> {
     start: usize,
@@ -36,6 +39,7 @@ pub struct NodeIterator<'a, P: Pnsv + Send + Sync> {
 impl<P> NodeIterator<'_, P>
 where P: Pnsv + Send + Sync
 {
+    /// Reset the iterator allowing to change the length of the strings for the nodes.
     pub fn reset(&mut self, k: usize) {
         self.start = 1;
         self.k = k;
