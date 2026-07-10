@@ -308,7 +308,10 @@ impl PnsvSafe {
                 // The last few target lengths will have a small maximum range length, therefore,
                 // it is better to not include them in the range of the windowed wavelet tree to
                 // save on memory.
-                let guaranteed_scan_hits_last_lengths = (usize::BITS - (scan_bound * LcsSimd::LANES - 1).leading_zeros()) as usize / 2;
+                // let guaranteed_scan_hits_last_lengths = (usize::BITS - (scan_bound * LcsSimd::LANES - 1).leading_zeros()) as usize / 2;
+
+                // Set to 0 for now to allow reduction of the scan bound.
+                let guaranteed_scan_hits_last_lengths = 0;
                 let wwt_upper_bound = max_k.saturating_sub(guaranteed_scan_hits_last_lengths);
                 let wwt = if wwt_upper_bound > ranges_upper_bound {
                     let window_size = wwt_upper_bound - ranges_upper_bound + 1;
