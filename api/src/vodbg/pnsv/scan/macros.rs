@@ -190,7 +190,7 @@ macro_rules! define_scan {
             }
 
             fn serialize<W: std::io::Write>(&self, out: &mut W) -> std::io::Result<usize> {
-                log::info!("[{}::load] serializing...", stringify!($name));
+                log::info!("[{}::serialize] serializing...", stringify!($name));
                 let mut written: usize = 0;
                 out.write_all(&(self.n as u64).to_le_bytes())?;
                 written += size_of::<u64>();
@@ -200,6 +200,7 @@ macro_rules! define_scan {
                     }
                 }
                 written += self.words.len() * Self::LANES * Self::BYTES_PER_ELEMENT;
+                log::info!("[{}::serialize] done.", stringify!($name));
                 Ok(written)
             }
 
@@ -222,6 +223,7 @@ macro_rules! define_scan {
                     words,
                     n
                 };
+                log::info!("[{}::load] done.", stringify!($name));
                 Ok(result)
             }
 
