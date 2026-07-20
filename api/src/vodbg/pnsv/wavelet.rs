@@ -479,9 +479,10 @@ impl WindowedWaveletTree {
     }
 
     pub fn load<R: std::io::Read>(input: &mut R) -> std::io::Result<Self> {
-        let lower_bound = u64::from_le(u64::load(input)?) as usize;
-        let window_size = u64::from_le(u64::load(input)?) as usize;
-        let tree_size = u64::from_le(u64::load(input)?) as usize;
+        use byteorder::{ReadBytesExt, LittleEndian};
+        let lower_bound = input.read_u64::<LittleEndian>()? as usize;
+        let window_size = input.read_u64::<LittleEndian>()? as usize;
+        let tree_size   = input.read_u64::<LittleEndian>()? as usize;
         let mut tree: Vec<Node> = vec![];
         Self::make_tree_nodes(&mut tree, lower_bound, window_size);
         assert_eq!(tree_size, tree.len());

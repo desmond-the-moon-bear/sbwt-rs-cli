@@ -1,6 +1,5 @@
 // Code by Martin Kostadinov.
 
-use simple_sds_sbwt::serialize::Serialize;
 use super::bp::nearest_neighbor_dictionary::NearestNeighbourDictionary as NND;
 use super::Pnsv;
 

@@ -206,7 +206,8 @@ macro_rules! define_scan {
 
             fn load<R: std::io::Read>(input: &mut R) -> std::io::Result<Self> {
                 log::info!("[{}::load] loading...", stringify!($name));
-                let n = u64::from_le(u64::load(input)?) as usize;
+                use byteorder::{ReadBytesExt, LittleEndian};
+                let n = input.read_u64::<LittleEndian>()? as usize;
                 #[allow(clippy::manual_div_ceil)]
                 let word_count = (n + Self::LANES - 1) / Self::LANES;
                 let mut words: Vec<Self::Word> = Vec::with_capacity(word_count);
@@ -324,8 +325,9 @@ macro_rules! define_variants_enum {
             }
 
             fn load<R: std::io::Read>(input: &mut R) -> std::io::Result<Self> {
-                let lanes = u64::from_le(u64::load(input)?) as usize;
-                let bytes_per_element = u64::from_le(u64::load(input)?) as usize;
+                use byteorder::{ReadBytesExt, LittleEndian};
+                let lanes = input.read_u64::<LittleEndian>()? as usize;
+                let bytes_per_element = input.read_u64::<LittleEndian>()? as usize;
                 match (lanes, bytes_per_element) {
                     $(
                         ($variant::LANES, $variant::BYTES_PER_ELEMENT) => {

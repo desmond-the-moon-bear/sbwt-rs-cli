@@ -134,10 +134,11 @@ impl Matrix {
     }
 
     pub fn load<R: std::io::Read>(input: &mut R) -> std::io::Result<Self> {
-        let lower_bound = u64::from_le(u64::load(input)?) as usize;
-        let upper_bound = u64::from_le(u64::load(input)?) as usize;
-        let width = u64::from_le(u64::load(input)?) as usize;
-        let row_count = u64::from_le(u64::load(input)?) as usize;
+        use byteorder::{ReadBytesExt, LittleEndian};
+        let lower_bound = input.read_u64::<LittleEndian>()? as usize;
+        let upper_bound = input.read_u64::<LittleEndian>()? as usize;
+        let width       = input.read_u64::<LittleEndian>()? as usize;
+        let row_count   = input.read_u64::<LittleEndian>()? as usize;
         let mut rows = vec![];
         for i in 0..row_count {
             log::info!("[Matrix::load] loading level {}...", i);

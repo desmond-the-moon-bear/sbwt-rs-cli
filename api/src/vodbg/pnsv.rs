@@ -21,8 +21,6 @@ pub use scan::LcsSimd;
 pub use wavelet::WindowedWaveletTree as WWT;
 use scan::Scan;
 
-use simple_sds_sbwt::serialize::Serialize;
-
 /// Previous/Next Smaller Value.
 pub trait Pnsv {
     /// Given an index in the underlying LCS array and a target value, finds the previous index at
@@ -243,8 +241,9 @@ impl PnsvTuned {
 
     /// Loads this data structure from binary.
     pub fn load<R: std::io::Read>(input: &mut R) -> std::io::Result<Self> {
-        let scan_bound = u64::from_le(u64::load(input)?) as usize;
-        let fallback_scan_overlap = u64::from_le(u64::load(input)?) as usize;
+        use byteorder::{ReadBytesExt, LittleEndian};
+        let scan_bound            = input.read_u64::<LittleEndian>()? as usize;
+        let fallback_scan_overlap = input.read_u64::<LittleEndian>()? as usize;
         let ranges = Ranges::load(input)?;
         let matrix = PnsvMatrix::load(input)?;
         let lcs_simd = LcsSimd::load(input)?;
@@ -401,7 +400,8 @@ impl PnsvSafe {
 
     /// Loads this data structure from binary.
     pub fn load<R: std::io::Read>(input: &mut R) -> std::io::Result<Self> {
-        let scan_bound = u64::from_le(u64::load(input)?) as usize;
+        use byteorder::{ReadBytesExt, LittleEndian};
+        let scan_bound = input.read_u64::<LittleEndian>()? as usize;
         let ranges = Ranges::load(input)?;
         let wwt = WWT::load(input)?;
         let lcs_simd = LcsSimd::load(input)?;

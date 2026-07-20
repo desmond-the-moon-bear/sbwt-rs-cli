@@ -498,8 +498,9 @@ impl Counts {
     }
 
     pub fn load<R: std::io::Read>(input: &mut R) -> std::io::Result<Self> {
-        let sample_distance = u64::from_le(u64::load(input)?) as usize;
-        let individual_counts_len = u64::from_le(u64::load(input)?) as usize;
+        use byteorder::{ReadBytesExt, LittleEndian};
+        let sample_distance = input.read_u64::<LittleEndian>()? as usize;
+        let individual_counts_len = input.read_u64::<LittleEndian>()? as usize;
         let mut individual_counts: Vec<u8> = vec![0; individual_counts_len];
         input.read_exact(&mut individual_counts)?;
         let sample_information = Vec::<Sample>::load(input)?;
