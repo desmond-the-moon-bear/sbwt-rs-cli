@@ -87,8 +87,7 @@ pub const CARGO_API_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Clone, Eq, PartialEq, Debug)]
 #[allow(non_snake_case)] // C-array is an established convention in BWT indexes
 pub struct SbwtIndex<SS: SubsetSeq> {
-    // pub(crate) sbwt: SS, // pub(crate) for testing from submodules
-    pub sbwt: SS, // note(mk): pub to test from other sandbox projects;
+    pub(crate) sbwt: SS, // pub(crate) for testing from submodules
     n_kmers: usize,
     k: usize,
     C: Vec<usize>, // Cumulative character counts (includes one ghost dollar)
