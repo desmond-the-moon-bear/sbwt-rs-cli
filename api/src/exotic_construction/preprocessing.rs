@@ -21,7 +21,7 @@ where W: std::io::Write
     Ok(())
 }
 
-pub fn truncate_lcp<R: std::io::Read, const BIG_ENDIAN: bool>(input: &mut R, length: usize, k: usize) -> std::io::Result<Lcp> {
+pub fn truncate_lcp<R: std::io::Read, const LITTLE_ENDIAN: bool>(input: &mut R, length: usize, k: usize) -> std::io::Result<Lcp> {
     log::info!("[truncate_lcp] begin");
     let k_bit_width = usize::BITS - k.leading_zeros();
     let width = (k_bit_width.div_ceil(u8::BITS) as usize).next_power_of_two();
@@ -29,10 +29,10 @@ pub fn truncate_lcp<R: std::io::Read, const BIG_ENDIAN: bool>(input: &mut R, len
     let mut data = Vec::<u8>::with_capacity(length * width);
 
     while input.read_exact(&mut bytes).is_ok() {
-        let number = if BIG_ENDIAN {
-            u64::from_be_bytes(bytes)
-        } else {
+        let number = if LITTLE_ENDIAN {
             u64::from_le_bytes(bytes)
+        } else {
+            u64::from_be_bytes(bytes)
         };
         let truncated_number = number.min(k as u64);
         let result_bytes = &truncated_number.to_le_bytes()[..width];
