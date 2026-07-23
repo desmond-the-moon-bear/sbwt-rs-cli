@@ -15,8 +15,6 @@ use simple_sds_sbwt::int_vector::IntVector;
 use simple_sds_sbwt::ops::{BitVec as BitVecTrait, Push, Rank, Select};
 use simple_sds_sbwt::raw_vector::{AccessRaw, RawVector};
 
-const FULL_SET: u8 = 0b00001111;
-
 pub struct Output<SS: SubsetSeq + Send> {
     pub sbwt: SbwtIndex<SS>,
     pub lcs: Option<LcsArray>,
@@ -49,6 +47,8 @@ where
     Ok(result)
 }
 
+const FULL_SET: u8 = 0b00011110;
+
 pub fn build_without_redundant_dummies<SS: SubsetSeq + Send>(
     bwt: &Bwt,
     lcp: &Lcp,
@@ -60,14 +60,14 @@ pub fn build_without_redundant_dummies<SS: SubsetSeq + Send>(
 
     #[inline]
     fn push_set(rows: &mut [Row], set: u8) {
-        for i in 0..4 {
-            rows[i].push(set & (1 << i) != 0);
+        for i in 1..=4 {
+            rows[i - 1].push(set & (1 << i) != 0);
         }
     }
 
     #[inline]
     fn include_letter(bwt: &Bwt, index: usize, current_set: u8) -> u8 {
-        (1 << (bwt.get_char_index(index) - 1)) as u8 | current_set
+        (1 << bwt.get_char_index(index)) as u8 | current_set
     }
 
     let mut rows = Vec::<BitVec<u64>>::new();
@@ -93,13 +93,13 @@ pub fn build_without_redundant_dummies<SS: SubsetSeq + Send>(
     for index in 1..separator_count {
         if dummy_marks.keep_dummy.bit(index) {
             current_set = include_letter(bwt, index, current_set);
-            if current_set == FULL_SET {
+            if current_set & FULL_SET == FULL_SET {
                 break;
             }
         }
     }
     push_set(&mut rows, current_set);
-    log::info!("[build_sets_and_lcs] done with $ range");
+    log::info!("[build_without_redundant_dummies] done with $ range");
 
     current_set = 0;
     let mut current_lcs_value  = k - 1;
@@ -164,7 +164,7 @@ pub fn build_without_redundant_dummies<SS: SubsetSeq + Send>(
         current_set = 0;
         k_range_count -= 1;
     }
-    log::info!("[build_sets_and_lcs] done with other ranges");
+    log::info!("[build_without_redundant_dummies] done with other ranges");
 
     let C: Vec<usize> = crate::util::get_C_array(&rows);
     let mut subset_rank = SS::new_from_bit_vectors(rows);
@@ -186,6 +186,161 @@ pub fn build_without_redundant_dummies<SS: SubsetSeq + Send>(
         sbwt: index,
         lcs,
         counts: None,
+    }
+}
+
+pub fn build_with_all_dummies<SS: SubsetSeq + Send>(
+    bwt: &Bwt,
+    lcp: &Lcp,
+    k: usize,
+    build_lcs: bool,
+    build_counts: bool,
+) -> Output<SS> {
+    let aux = build_parital_auxiliary_bitvectors(bwt, lcp, k);
+
+    #[inline]
+    fn push_set(rows: &mut [Row], set: u8) {
+        for i in 1..=4 {
+            rows[i - 1].push(set & (1 << i) != 0);
+        }
+    }
+
+    #[inline]
+    fn include_letter(bwt: &Bwt, index: usize, current_set: u8) -> u8 {
+        (1 << bwt.get_char_index(index)) as u8 | current_set
+    }
+
+    let mut rows = Vec::<BitVec<u64>>::new();
+    for _ in 0..4 {
+        // note(mk): These overestimating allocations should reserve the pages in the virtual
+        // memory space of the process, but it shouldn't actually use all of them. Potential
+        // breaking point!
+        rows.push(BitVec::with_capacity(bwt.len()));
+    }
+
+    let mut lcs: Option<IntVector> = if build_lcs {
+        let bit_width = (usize::BITS - k.leading_zeros()) as usize;
+        let mut value = IntVector::with_capacity(bwt.len(), bit_width).unwrap();
+        value.push(0); // '$...$' dummy k-mer
+        Some(value)
+    } else {
+        None
+    };
+
+    let mut counts: Option<Counts> = if build_counts {
+        let sample_capacity = bwt.len() / Counts::DEFAULT_SAMPLE_DISTANCE;
+        let mut value = Counts {
+            individual_counts: Vec::with_capacity(bwt.len()),
+            sample_distance: Counts::DEFAULT_SAMPLE_DISTANCE,
+            sample_information: Vec::with_capacity(sample_capacity),
+            large_counts: Vec::with_capacity(sample_capacity),
+        };
+        value.sample_information.push(Sample { count: 0, large_counts_up_to_sample: 0 });
+        Some(value)
+    } else {
+        None
+    };
+
+    let mut current_set: u8 = 0;
+    let separator_count = bwt.counts[1];
+
+    for index in 1..separator_count {
+        current_set = include_letter(bwt, index, current_set);
+        if current_set & FULL_SET == FULL_SET {
+            break;
+        }
+    }
+    push_set(&mut rows, current_set);
+    current_set = 0;
+    log::info!("[build_with_all_dummies] done with $ range");
+
+    let mut k_range_count = 0;
+    let mut sbwt_index = 0;
+    let mut count: u64 = 0;
+    let mut kmer_count: u64 = 0;
+    let mut large_counts_up_to_sample: usize = 0;
+    for index in separator_count..bwt.len() {
+        if build_counts {
+            count += 1;
+            kmer_count += 1;
+            if kmer_count == u8::MAX as u64 {
+                large_counts_up_to_sample += 1;
+            }
+        }
+
+        if aux.k_minus_one_ranges.bit(index) {
+            while k_range_count > 0 {
+                push_set(&mut rows, current_set);
+                current_set = 0;
+                k_range_count -= 1;
+            }
+
+            current_set = 0;
+        }
+
+        if aux.k_ranges.bit(index) {
+            k_range_count += 1;
+
+            if build_lcs {
+                lcs.as_mut().unwrap().push(lcp.get(index) as u64);
+            }
+
+            if build_counts {
+                sbwt_index += 1;
+                let counts = counts.as_mut().unwrap();
+                if sbwt_index % Counts::DEFAULT_SAMPLE_DISTANCE == 0 {
+                    counts.sample_information.push(Sample {
+                        count,
+                        large_counts_up_to_sample ,
+                    });
+                }
+                if kmer_count >= u8::MAX as u64 {
+                    counts.individual_counts.push(u8::MAX);
+                    counts.large_counts.push(kmer_count - u8::MAX as u64);
+                } else {
+                    counts.individual_counts.push(kmer_count as u8);
+                }
+            }
+        }
+
+        current_set = include_letter(bwt, index, current_set);
+    }
+
+    while k_range_count > 0 {
+        push_set(&mut rows, current_set);
+        current_set = 0;
+        k_range_count -= 1;
+    }
+
+    if build_counts {
+        counts.as_mut().unwrap().sample_information.push(Sample {
+            count,
+            large_counts_up_to_sample ,
+        });
+    }
+
+    log::info!("[build_with_all_dummies] done with other ranges");
+
+    let C: Vec<usize> = crate::util::get_C_array(&rows);
+    let mut subset_rank = SS::new_from_bit_vectors(rows);
+    subset_rank.build_rank();
+    let n_sets  = subset_rank.len();
+    let n_kmers = aux.kmer_count;
+    let mut index = SbwtIndex::<SS>::from_components(
+        subset_rank,
+        n_kmers,
+        k,
+        C,
+        crate::PrefixLookupTable::new_empty(n_sets)
+    );
+    let prefix_lookup_table = crate::PrefixLookupTable::new(&index, 8);
+    index.set_lookup_table(prefix_lookup_table);
+    let lcs = lcs.map(LcsArray::new);
+
+    Output {
+        sbwt: index,
+        lcs,
+        counts,
     }
 }
 
@@ -268,6 +423,61 @@ fn build_full_auxiliary_bitvectors(bwt: &Bwt, lcp: &Lcp, k: usize) -> FullAuxili
     }
 }
 
+struct PartialAuxiliaryBitVectors {
+    kmer_count: usize,
+    // shorter_than_k: RawVector,
+    k_minus_one_ranges: RawVector,
+    k_ranges: RawVector,
+}
+
+fn build_parital_auxiliary_bitvectors(bwt: &Bwt, lcp: &Lcp, k: usize) -> PartialAuxiliaryBitVectors {
+    log::info!("[build_partial_auxiliary_bitvectors] begin");
+    let len = bwt.len();
+    // let mut shorter_than_k     = RawVector::with_len(len, false);
+    let mut k_minus_one_ranges = RawVector::with_len(len, false);
+    let mut k_ranges           = RawVector::with_len(len, false);
+    let mut kmer_count = 0;
+    let mut order = 1;
+    let mut current_length = 0;
+    for _ in 1..len {
+        let (next_order, character) = bwt.lf_step(order);
+        order = next_order;
+        if character == b'$' {
+            current_length = 0;
+            // shorter_than_k.set_bit(order, true);
+        } else {
+            current_length += 1;
+            // if current_length < k {
+            //     shorter_than_k.set_bit(order, true);
+            // }
+            if current_length > k {
+                current_length = k;
+            }
+        }
+        let lcp_value = lcp.get(order);
+        if lcp_value < current_length {
+            k_ranges.set_bit(order, true);
+            if current_length >= k {
+                kmer_count += 1;
+            }
+            if current_length < k || lcp_value < k - 1 {
+                k_minus_one_ranges.set_bit(order, true);
+            }
+        }
+    }
+
+    // Skip the '#' region at the beginning.
+    k_minus_one_ranges.set_bit(1, true);
+    k_ranges.set_bit(1, true);
+
+    PartialAuxiliaryBitVectors {
+        kmer_count,
+        // shorter_than_k,
+        k_minus_one_ranges,
+        k_ranges,
+    }
+}
+
 struct DummyMarks {
     keep_dummy: RawVector,
     keep_outedge: RawVector,
@@ -340,204 +550,6 @@ fn keep_predecessors(mut predecessor: usize, bwt: &Bwt, mut k: usize, keep_suffi
         keep_suffix.set_bit(predecessor, true);
         predecessor = bwt.inverse_lf_step(predecessor);
         k -= 1;
-    }
-}
-
-pub fn build_with_all_dummies<SS: SubsetSeq + Send>(
-    bwt: &Bwt,
-    lcp: &Lcp,
-    k: usize,
-    build_lcs: bool,
-    build_counts: bool,
-) -> Output<SS> {
-
-    todo!("(mk) this is buggy; fix it...");
-
-    let aux = build_parital_auxiliary_bitvectors(bwt, lcp, k);
-
-    #[inline]
-    fn push_set(rows: &mut [Row], set: u8) {
-        for i in 1..=4 {
-            rows[i - 1].push(set & (1 << i) != 0);
-        }
-    }
-
-    #[inline]
-    fn include_letter(bwt: &Bwt, index: usize, current_set: u8) -> u8 {
-        let char_index = bwt.get_char_index(index);
-        if char_index < u8::BITS as usize {
-            (1 << char_index) as u8 | current_set
-        } else {
-            current_set
-        }
-    }
-
-    let mut rows = Vec::<BitVec<u64>>::new();
-    for _ in 0..4 {
-        // note(mk): These overestimating allocations should reserve the pages in the virtual
-        // memory space of the process, but it shouldn't actually use all of them. Potential
-        // breaking point!
-        rows.push(BitVec::with_capacity(bwt.len()));
-    }
-
-    let mut lcs: Option<IntVector> = if build_lcs {
-        let bit_width = (usize::BITS - k.leading_zeros()) as usize;
-        let mut value = IntVector::with_capacity(bwt.len(), bit_width).unwrap();
-        value.push(0); // '$...$' dummy k-mer
-        Some(value)
-    } else {
-        None
-    };
-
-    let mut counts: Option<Counts> = if build_counts {
-        let sample_capacity = bwt.len() / Counts::DEFAULT_SAMPLE_DISTANCE;
-        let mut value = Counts {
-            individual_counts: Vec::with_capacity(bwt.len()),
-            sample_distance: Counts::DEFAULT_SAMPLE_DISTANCE,
-            sample_information: Vec::with_capacity(sample_capacity),
-            large_counts: Vec::with_capacity(sample_capacity),
-        };
-        value.sample_information.push(Sample { count: 0, large_counts_up_to_sample: 0 });
-        Some(value)
-    } else {
-        None
-    };
-
-    let mut current_set: u8 = 0;
-    let separator_count = bwt.counts[1];
-
-    for index in 1..separator_count {
-        current_set = include_letter(bwt, index, current_set);
-        if current_set == FULL_SET {
-            break;
-        }
-    }
-    log::info!("[build_sets_and_lcs] done with $ range");
-
-    let mut sbwt_index = 0;
-    let mut count: u64 = 0;
-    let mut kmer_count: u64 = 0;
-    let mut large_counts_up_to_sample: usize = 0;
-    for index in separator_count..bwt.len() {
-        if build_counts {
-            count += 1;
-            kmer_count += 1;
-            if kmer_count == u8::MAX as u64 {
-                large_counts_up_to_sample += 1;
-            }
-        }
-
-        if aux.k_ranges.bit(index) {
-            if build_counts {
-                sbwt_index += 1;
-                let counts = counts.as_mut().unwrap();
-                if sbwt_index % Counts::DEFAULT_SAMPLE_DISTANCE == 0 {
-                    counts.sample_information.push(Sample {
-                        count,
-                        large_counts_up_to_sample ,
-                    });
-                }
-                if kmer_count >= u8::MAX as u64 {
-                    counts.individual_counts.push(u8::MAX);
-                    counts.large_counts.push(kmer_count - u8::MAX as u64);
-                } else {
-                    counts.individual_counts.push(kmer_count as u8);
-                }
-            }
-
-            // This is the set for the previous k-range.
-            if current_set == 0 {
-                log::info!("why are you 0...?");
-                panic!();
-            }
-            push_set(&mut rows, current_set);
-            current_set = 0;
-
-            // This is the lcs value for the current k-range.
-            if build_lcs {
-                lcs.as_mut().unwrap().push(lcp.get(index) as u64);
-            }
-        }
-
-        current_set = include_letter(bwt, lcp.get(index), current_set);
-    }
-
-    if build_counts {
-        counts.as_mut().unwrap().sample_information.push(Sample {
-            count,
-            large_counts_up_to_sample ,
-        });
-    }
-
-    // Output the set of the last k-range.
-    push_set(&mut rows, current_set);
-
-    log::info!("[build_sets_and_lcs] done with other ranges");
-
-    let C: Vec<usize> = crate::util::get_C_array(&rows);
-    let mut subset_rank = SS::new_from_bit_vectors(rows);
-    subset_rank.build_rank();
-    let n_sets  = subset_rank.len();
-    let n_kmers = aux.kmer_count;
-    let mut index = SbwtIndex::<SS>::from_components(
-        subset_rank,
-        n_kmers,
-        k,
-        C,
-        crate::PrefixLookupTable::new_empty(n_sets)
-    );
-    let prefix_lookup_table = crate::PrefixLookupTable::new(&index, 8);
-    index.set_lookup_table(prefix_lookup_table);
-    let lcs = lcs.map(LcsArray::new);
-
-    Output {
-        sbwt: index,
-        lcs,
-        counts,
-    }
-}
-
-struct PartialAuxiliaryBitVectors {
-    kmer_count: usize,
-    k_ranges: RawVector,
-}
-
-fn build_parital_auxiliary_bitvectors(bwt: &Bwt, lcp: &Lcp, k: usize) -> PartialAuxiliaryBitVectors {
-
-    todo!("(mk) k-1 ranges are also necessary, return them as well again...");
-
-    log::info!("[build_partial_auxiliary_bitvectors] begin");
-    let len = bwt.len();
-    let mut k_ranges = RawVector::with_len(len, false);
-    let mut kmer_count = 0;
-    let mut order = 1;
-    let mut current_length = 0;
-    for _ in 1..len {
-        let (next_order, character) = bwt.lf_step(order);
-        order = next_order;
-        if character == b'$' {
-            current_length = 0;
-        } else {
-            current_length += 1;
-            if current_length > k {
-                current_length = k;
-            }
-        }
-        let lcp_value = lcp.get(order);
-        if lcp_value < current_length {
-            k_ranges.set_bit(order, true);
-            if current_length >= k {
-                kmer_count += 1;
-            }
-        }
-    }
-
-    // Skip the '#' region at the beginning.
-    k_ranges.set_bit(1, true);
-
-    PartialAuxiliaryBitVectors {
-        kmer_count,
-        k_ranges
     }
 }
 
