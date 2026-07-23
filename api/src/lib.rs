@@ -128,7 +128,7 @@
 // Construction algorithms
 mod bitpacked_kmer_sorting;
 mod bitpacked_kmer_sorting_mem;
-pub mod exotic_construction;
+pub mod alternative_construction;
 
 mod tempfile;
 mod util;
