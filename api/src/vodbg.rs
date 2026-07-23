@@ -35,8 +35,8 @@ use simple_sds_sbwt::serialize::Serialize;
 // it supports changing the order i.e. the length of the string corresponding to a given node.
 #[derive(Clone, Debug)]
 pub struct VoDbg<'a, SS: SubsetSeq + Send + Sync, P: Pnsv + Send + Sync> {
-    sbwt: &'a SbwtIndex<SS>,
-    pnsv: &'a P,
+    pub sbwt: &'a SbwtIndex<SS>,
+    pub pnsv: &'a P,
     /// A bitvector which marks the dummy nodes in the SBWT.
     dummy_marks: BitVector,
     /// A packed integer array with the maximum length of a suffix of a dummy node which does not
@@ -141,6 +141,10 @@ where
             dummy_lengths,
             counts: None,
         }
+    }
+
+    pub fn counts(&self) -> Option<&Counts> {
+        self.counts.as_ref()
     }
 
     #[allow(clippy::result_unit_err)]

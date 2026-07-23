@@ -260,14 +260,6 @@ pub fn build_with_all_dummies<SS: SubsetSeq + Send>(
     let mut kmer_count: u64 = 0;
     let mut large_counts_up_to_sample: usize = 0;
     for index in separator_count..bwt.len() {
-        if build_counts {
-            count += 1;
-            kmer_count += 1;
-            if kmer_count == u8::MAX as u64 {
-                large_counts_up_to_sample += 1;
-            }
-        }
-
         if aux.k_minus_one_ranges.bit(index) {
             while k_range_count > 0 {
                 push_set(&mut rows, current_set);
@@ -300,6 +292,15 @@ pub fn build_with_all_dummies<SS: SubsetSeq + Send>(
                 } else {
                     counts.individual_counts.push(kmer_count as u8);
                 }
+                kmer_count = 0;
+            }
+        }
+
+        if build_counts {
+            count += 1;
+            kmer_count += 1;
+            if kmer_count == u8::MAX as u64 {
+                large_counts_up_to_sample += 1;
             }
         }
 
@@ -313,10 +314,18 @@ pub fn build_with_all_dummies<SS: SubsetSeq + Send>(
     }
 
     if build_counts {
-        counts.as_mut().unwrap().sample_information.push(Sample {
+        let counts = counts.as_mut().unwrap();
+        // Always create a sample at the end of the array.
+        counts.sample_information.push(Sample {
             count,
-            large_counts_up_to_sample ,
+            large_counts_up_to_sample,
         });
+        if kmer_count >= u8::MAX as u64 {
+            counts.individual_counts.push(u8::MAX);
+            counts.large_counts.push(kmer_count - u8::MAX as u64);
+        } else {
+            counts.individual_counts.push(kmer_count as u8);
+        }
     }
 
     log::info!("[build_with_all_dummies] done with other ranges");

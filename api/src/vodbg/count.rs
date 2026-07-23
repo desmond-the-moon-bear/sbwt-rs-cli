@@ -68,7 +68,7 @@ impl Counts {
 
         // Create an imaginary sample before the beginning and after the end of the array to ensure
         // there is a sample before and after each element.
-        let sample_count = streaming_index.n / sample_distance + 2;
+        let sample_count = streaming_index.n.div_ceil(sample_distance) + 1;
         let mut sample_information: Vec<Sample> = vec![Sample::default(); sample_count];
 
         // note(mk): Check other hash maps and/or think for other solutions...
@@ -87,11 +87,11 @@ impl Counts {
 
                 let representative = range.start;
 
-                // let sbwt_was_not_built_with_all_dummies = length < streaming_index.k
-                //     && (!dummy_info.is_dummy(representative) || dummy_info.get_dummy_length(representative) != length);
-                // if sbwt_was_not_built_with_all_dummies {
-                //     return None;
-                // }
+                let sbwt_was_not_built_with_all_dummies = length < streaming_index.k
+                    && (!dummy_info.is_dummy(representative) || dummy_info.get_dummy_length(representative) != length);
+                if sbwt_was_not_built_with_all_dummies {
+                    return None;
+                }
 
                 let sample = representative / sample_distance + 1;
                 if individual_counts[representative] == u8::MAX - 1 {
@@ -166,7 +166,7 @@ impl Counts {
 
         // Create an imaginary sample before the beginning and after the end of the array to ensure
         // there is a sample before and after each element.
-        let sample_count = streaming_index.n / sample_distance + 2;
+        let sample_count = streaming_index.n.div_ceil(sample_distance) + 1;
         let sample_information: Vec<PartialAtomicSample> = vec![Sample::default(); sample_count]
             .into_iter()
             .map(|sample| PartialAtomicSample {
@@ -216,7 +216,7 @@ impl Counts {
         });
 
         if !success.load(Ordering::SeqCst) {
-            // return None;
+            return None;
         }
 
         let mut pairs: Vec<_> = large_counts.into_iter().collect();
@@ -313,7 +313,7 @@ impl Counts {
 
         // Create an imaginary sample before the beginning and after the end of the array to ensure
         // there is a sample before and after each element.
-        let sample_count = streaming_index.n / sample_distance + 2;
+        let sample_count = streaming_index.n.div_ceil(sample_distance) + 1;
         let sample_information: Vec<PartialAtomicSample> = vec![Sample::default(); sample_count]
             .into_iter()
             .map(|sample| PartialAtomicSample {
@@ -363,7 +363,7 @@ impl Counts {
         });
 
         if !success.load(Ordering::SeqCst) {
-            // return None;
+            return None;
         }
 
         // The following transformations from the atomic should ultimately become NOPs.
@@ -645,11 +645,11 @@ where
 
                 let representative = range.start;
 
-                // let sbwt_was_not_built_with_all_dummies = length < streaming_index.k
-                //     && (!dummy_info.is_dummy(representative) || dummy_info.get_dummy_length(representative) != length);
-                // if sbwt_was_not_built_with_all_dummies {
-                //     return Err(());
-                // }
+                let sbwt_was_not_built_with_all_dummies = length < streaming_index.k
+                    && (!dummy_info.is_dummy(representative) || dummy_info.get_dummy_length(representative) != length);
+                if sbwt_was_not_built_with_all_dummies {
+                    return Err(());
+                }
 
                 // note(mk):
                 //  * fetch_update will be renamed to try_update in a future version of Rust.
@@ -709,11 +709,11 @@ where
 
                 let representative = range.start;
 
-                // let sbwt_was_not_built_with_all_dummies = length < streaming_index.k
-                //     && (!dummy_info.is_dummy(representative) || dummy_info.get_dummy_length(representative) != length);
-                // if sbwt_was_not_built_with_all_dummies {
-                //     return Err(());
-                // }
+                let sbwt_was_not_built_with_all_dummies = length < streaming_index.k
+                    && (!dummy_info.is_dummy(representative) || dummy_info.get_dummy_length(representative) != length);
+                if sbwt_was_not_built_with_all_dummies {
+                    return Err(());
+                }
 
                 // note(mk):
                 //  * fetch_update will be renamed to try_update in a future version of Rust.
@@ -826,8 +826,12 @@ mod tests {
         };
 
         let vodbg = vodbg::VoDbg::new(&sbwt, &pnsv_tuned);
-        let counts = Counts::try_new_default(sequence_stream, &streaming_index, &vodbg);
-        assert!(counts.is_none())
+        let counts = Counts::try_new_default(sequence_stream.clone(), &streaming_index, &vodbg);
+        assert!(counts.is_none());
+        let counts = Counts::try_new_concurrent_two_passes(sequence_stream.clone(), &streaming_index, &vodbg, Counts::DEFAULT_SAMPLE_DISTANCE, 1, 2, Counts::DEFAULT_BATCH_SIZE_IN_BYTES);
+        assert!(counts.is_none());
+        let counts = Counts::try_new_concurrent_with_hashmap(sequence_stream, &streaming_index, &vodbg, Counts::DEFAULT_SAMPLE_DISTANCE, 1, 2, Counts::DEFAULT_BATCH_SIZE_IN_BYTES);
+        assert!(counts.is_none());
     }
 
     #[test]
