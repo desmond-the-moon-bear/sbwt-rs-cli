@@ -58,18 +58,6 @@ pub fn build_without_redundant_dummies<SS: SubsetSeq + Send>(
     let aux = build_full_auxiliary_bitvectors(bwt, lcp, k);
     let dummy_marks = build_dummy_marks(bwt, k, &aux);
 
-    #[inline]
-    fn push_set(rows: &mut [Row], set: u8) {
-        for i in 1..=4 {
-            rows[i - 1].push(set & (1 << i) != 0);
-        }
-    }
-
-    #[inline]
-    fn include_letter(bwt: &Bwt, index: usize, current_set: u8) -> u8 {
-        (1 << bwt.get_char_index(index)) as u8 | current_set
-    }
-
     let mut rows = Vec::<BitVec<u64>>::new();
     for _ in 0..4 {
         // note(mk): These overestimating allocations should reserve the pages in the virtual
@@ -197,30 +185,16 @@ pub fn build_with_all_dummies<SS: SubsetSeq + Send>(
     build_counts: bool,
 ) -> Output<SS> {
     let aux = build_parital_auxiliary_bitvectors(bwt, lcp, k);
-
-    #[inline]
-    fn push_set(rows: &mut [Row], set: u8) {
-        for i in 1..=4 {
-            rows[i - 1].push(set & (1 << i) != 0);
-        }
-    }
-
-    #[inline]
-    fn include_letter(bwt: &Bwt, index: usize, current_set: u8) -> u8 {
-        (1 << bwt.get_char_index(index)) as u8 | current_set
-    }
+    let set_count = aux.set_count;
 
     let mut rows = Vec::<BitVec<u64>>::new();
     for _ in 0..4 {
-        // note(mk): These overestimating allocations should reserve the pages in the virtual
-        // memory space of the process, but it shouldn't actually use all of them. Potential
-        // breaking point!
-        rows.push(BitVec::with_capacity(bwt.len()));
+        rows.push(BitVec::with_capacity(set_count));
     }
 
     let mut lcs: Option<IntVector> = if build_lcs {
         let bit_width = (usize::BITS - k.leading_zeros()) as usize;
-        let mut value = IntVector::with_capacity(bwt.len(), bit_width).unwrap();
+        let mut value = IntVector::with_capacity(set_count, bit_width).unwrap();
         value.push(0); // '$...$' dummy k-mer
         Some(value)
     } else {
@@ -228,9 +202,9 @@ pub fn build_with_all_dummies<SS: SubsetSeq + Send>(
     };
 
     let mut counts: Option<Counts> = if build_counts {
-        let sample_capacity = bwt.len() / Counts::DEFAULT_SAMPLE_DISTANCE;
+        let sample_capacity = set_count / Counts::DEFAULT_SAMPLE_DISTANCE;
         let mut value = Counts {
-            individual_counts: Vec::with_capacity(bwt.len()),
+            individual_counts: Vec::with_capacity(set_count),
             sample_distance: Counts::DEFAULT_SAMPLE_DISTANCE,
             sample_information: Vec::with_capacity(sample_capacity),
             large_counts: Vec::with_capacity(sample_capacity),
@@ -433,8 +407,8 @@ fn build_full_auxiliary_bitvectors(bwt: &Bwt, lcp: &Lcp, k: usize) -> FullAuxili
 }
 
 struct PartialAuxiliaryBitVectors {
+    set_count: usize,
     kmer_count: usize,
-    // shorter_than_k: RawVector,
     k_minus_one_ranges: RawVector,
     k_ranges: RawVector,
 }
@@ -445,6 +419,7 @@ fn build_parital_auxiliary_bitvectors(bwt: &Bwt, lcp: &Lcp, k: usize) -> Partial
     // let mut shorter_than_k     = RawVector::with_len(len, false);
     let mut k_minus_one_ranges = RawVector::with_len(len, false);
     let mut k_ranges           = RawVector::with_len(len, false);
+    let mut set_count = 0;
     let mut kmer_count = 0;
     let mut order = 1;
     let mut current_length = 0;
@@ -453,12 +428,8 @@ fn build_parital_auxiliary_bitvectors(bwt: &Bwt, lcp: &Lcp, k: usize) -> Partial
         order = next_order;
         if character == b'$' {
             current_length = 0;
-            // shorter_than_k.set_bit(order, true);
         } else {
             current_length += 1;
-            // if current_length < k {
-            //     shorter_than_k.set_bit(order, true);
-            // }
             if current_length > k {
                 current_length = k;
             }
@@ -466,6 +437,7 @@ fn build_parital_auxiliary_bitvectors(bwt: &Bwt, lcp: &Lcp, k: usize) -> Partial
         let lcp_value = lcp.get(order);
         if lcp_value < current_length {
             k_ranges.set_bit(order, true);
+            set_count += 1;
             if current_length >= k {
                 kmer_count += 1;
             }
@@ -480,8 +452,8 @@ fn build_parital_auxiliary_bitvectors(bwt: &Bwt, lcp: &Lcp, k: usize) -> Partial
     k_ranges.set_bit(1, true);
 
     PartialAuxiliaryBitVectors {
+        set_count,
         kmer_count,
-        // shorter_than_k,
         k_minus_one_ranges,
         k_ranges,
     }
@@ -560,5 +532,17 @@ fn keep_predecessors(mut predecessor: usize, bwt: &Bwt, mut k: usize, keep_suffi
         predecessor = bwt.inverse_lf_step(predecessor);
         k -= 1;
     }
+}
+
+#[inline]
+fn push_set(rows: &mut [Row], set: u8) {
+    for i in 1..=4 {
+        rows[i - 1].push(set & (1 << i) != 0);
+    }
+}
+
+#[inline]
+fn include_letter(bwt: &Bwt, index: usize, current_set: u8) -> u8 {
+    (1 << bwt.get_char_index(index)) as u8 | current_set
 }
 

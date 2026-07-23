@@ -40,11 +40,12 @@ pub fn truncate_lcp<R: std::io::Read, const LITTLE_ENDIAN: bool>(input: &mut R, 
     }
 
     let result = Lcp::new_with_width(data, width);
-    log::info!("[truncate_lcp] end");
+    log::info!("[truncate_lcp] done");
     Ok(result)
 }
 
 pub fn ascii_to_bwt<R: std::io::Read>(input: &mut R, length: usize) -> std::io::Result<Bwt> {
+    log::info!("[ascii_to_bwt] begin");
     let mut raw_vectors = [
         RawVector::with_len(length, false), // $
         RawVector::with_len(length, false), // A
@@ -69,6 +70,7 @@ pub fn ascii_to_bwt<R: std::io::Read>(input: &mut R, length: usize) -> std::io::
     });
 
     let result = Bwt::new(bit_vectors);
+    log::info!("[ascii_to_bwt] done");
     Ok(result)
 }
 
