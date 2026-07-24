@@ -58,6 +58,15 @@ pub fn build_without_redundant_dummies<SS: SubsetSeq + Send>(
     let aux = build_full_auxiliary_bitvectors(bwt, lcp, k);
     let dummy_marks = build_dummy_marks(bwt, k, &aux);
 
+    let FullAuxiliaryBitVectors {
+        kmer_count,
+        shorter_than_k,
+        equal_to_k,
+        k_minus_one_ranges,
+        k_ranges
+    } = aux;
+    drop(equal_to_k);
+
     let mut rows = Vec::<BitVec<u64>>::new();
     for _ in 0..4 {
         // note(mk): These overestimating allocations should reserve the pages in the virtual
@@ -95,7 +104,7 @@ pub fn build_without_redundant_dummies<SS: SubsetSeq + Send>(
     let mut has_dummy_kmer     = false;
     let mut k_range_count = 0;
     for index in separator_count..bwt.len() {
-        if aux.k_minus_one_ranges.get(index) {
+        if k_minus_one_ranges.get(index) {
             if has_dummy_kmer && !include_dummy_kmer {
                 k_range_count -= 1;
             }
@@ -113,12 +122,12 @@ pub fn build_without_redundant_dummies<SS: SubsetSeq + Send>(
 
         current_lcs_value = current_lcs_value.min(lcp.get(index));
 
-        let is_start_of_k_range = aux.k_ranges.bit(index);
+        let is_start_of_k_range = k_ranges.bit(index);
         if is_start_of_k_range {
             k_range_count += 1;
         }
 
-        if aux.shorter_than_k.get(index) {
+        if shorter_than_k.get(index) {
             has_dummy_kmer = true;
             if dummy_marks.keep_dummy.bit(index) {
                 if !include_dummy_kmer {
@@ -158,7 +167,7 @@ pub fn build_without_redundant_dummies<SS: SubsetSeq + Send>(
     let mut subset_rank = SS::new_from_bit_vectors(rows);
     subset_rank.build_rank();
     let n_sets  = subset_rank.len();
-    let n_kmers = aux.kmer_count;
+    let n_kmers = kmer_count;
     let mut index = SbwtIndex::<SS>::from_components(
         subset_rank,
         n_kmers,
