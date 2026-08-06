@@ -651,46 +651,74 @@ pub(crate) fn par_build_full_auxiliary_data(
                     local_lcp.push(0);
                 }
 
-                for rank in start..end {
-                    let current_suffix_index = bounded_context_suffix_array[rank];
+                const BATCH_SIZE: usize = 512;
+                #[derive(Clone, Copy, Debug, Default)]
+                struct BatchRecord {
+                    previous_character_index: usize,
+                    length: u32,
+                    lcp_value: u32,
+                }
+                let mut batch: Vec<BatchRecord> = vec![BatchRecord::default(); BATCH_SIZE];
+                let mut batch_start = start;
 
-                    // Set the bit in the bitvector corresponding to the previous character in the input
-                    // for the (bounded) BWT.
-                    let previous_character_index_in_input = (current_suffix_index + length - 1) % length;
-                    let previous_character = input[previous_character_index_in_input];
-                    let previous_character_index = CHAR_TO_INDEX[previous_character as usize];
-                    if previous_character_index < bwt_vectors.len() {
-                        bwt_vectors[previous_character_index].set(rank, true);
+                while batch_start < end {
+                    let batch_end = (batch_start + BATCH_SIZE).min(end);
+
+                    for rank in batch_start..batch_end {
+                        let current_suffix_index = bounded_context_suffix_array[rank];
+
+                        // Set the bit in the bitvector corresponding to the previous character in the input
+                        // for the (bounded) BWT.
+                        let previous_character_index_in_input = (current_suffix_index + length - 1) % length;
+                        let previous_character = input[previous_character_index_in_input];
+                        let previous_character_index = CHAR_TO_INDEX[previous_character as usize];
+
+                        let previous_suffix_index = bounded_context_suffix_array[rank - 1];
+                        let (length, lcp_value) = find_length_and_lcp_value(
+                            k,
+                            input,
+                            word_count,
+                            current_suffix_index,
+                            previous_suffix_index
+                        );
+
+                        batch[rank - batch_start].previous_character_index = previous_character_index;
+                        batch[rank - batch_start].length                   = length as u32;
+                        batch[rank - batch_start].lcp_value                = lcp_value as u32;
                     }
 
-                    let previous_suffix_index = bounded_context_suffix_array[rank - 1];
-                    let (length, lcp_value) = find_length_and_lcp_value(
-                        k,
-                        input,
-                        word_count,
-                        current_suffix_index,
-                        previous_suffix_index
-                    );
-                    local_lcp.push(lcp_value);
+                    for rank in batch_start..batch_end {
+                        let BatchRecord { previous_character_index, length, lcp_value } = batch[rank - batch_start];
+                        let length                   = length as usize;
+                        let lcp_value                = lcp_value as usize;
 
-                    if length < k {
-                        shorter_than_k.set(rank, true);
-                        if length == k - 1 {
+                        if previous_character_index < bwt_vectors.len() {
+                            bwt_vectors[previous_character_index].set(rank, true);
+                        }
+
+                        local_lcp.push(lcp_value);
+
+                        if length < k {
+                            shorter_than_k.set(rank, true);
+                            if length == k - 1 {
+                                equal_to_k.set(rank, true);
+                            }
+                        } else if length == k {
                             equal_to_k.set(rank, true);
                         }
-                    } else if length == k {
-                        equal_to_k.set(rank, true);
+
+                        if lcp_value < length {
+                            k_ranges.set(rank, true);
+                            if length >= k {
+                                kmer_count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                            }
+                            if length < k || lcp_value < k - 1 {
+                                k_minus_one_ranges.set(rank, true);
+                            }
+                        }
                     }
 
-                    if lcp_value < length {
-                        k_ranges.set(rank, true);
-                        if length >= k {
-                            kmer_count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                        }
-                        if length < k || lcp_value < k - 1 {
-                            k_minus_one_ranges.set(rank, true);
-                        }
-                    }
+                    batch_start += BATCH_SIZE;
                 }
 
                 let mut lcp_ref = lcp_result.lock().unwrap();
