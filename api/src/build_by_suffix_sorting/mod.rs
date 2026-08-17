@@ -875,7 +875,7 @@ fn par_build_lcp(
                             k,
                             input,
                             word_count,
-                            previous_lcp_value.saturating_sub(1),
+                            previous_lcp_value.saturating_sub(2),
                             i,
                             phi[i]
                         ).min(k)
@@ -1700,9 +1700,9 @@ mod tests {
         assert_eq!(b"#$TGCA$T$$$A$ACGT$".as_slice(), &concatenation);
     }
 
-    fn make_suffix_array(concatenation: &[u8]) -> Vec<usize> {
+    fn make_suffix_array(concatenation: &[u8], context: usize) -> Vec<usize> {
         let mut suffix_array = (0..concatenation.len()).collect::<Vec<_>>();
-        suffix_array.sort_by_key(|index| &concatenation[*index..]);
+        suffix_array.sort_by_key(|index| &concatenation[*index..(*index + context).min(concatenation.len())]);
         suffix_array
     }
 
@@ -1776,7 +1776,7 @@ mod tests {
         ];
 
         let mut concatenation = make_concatenation(&seqs);
-        let suffix_array = make_suffix_array(&concatenation);
+        let suffix_array = make_suffix_array(&concatenation, k);
         let length = suffix_array.len();
         pad_input(&mut concatenation, k, length);
 
@@ -1843,7 +1843,7 @@ mod tests {
         seqs.dedup();
 
         let concatenation = make_concatenation(&seqs);
-        let suffix_array = make_suffix_array(&concatenation);
+        let suffix_array = make_suffix_array(&concatenation, k);
 
         {
             // Without redundant dummies.
