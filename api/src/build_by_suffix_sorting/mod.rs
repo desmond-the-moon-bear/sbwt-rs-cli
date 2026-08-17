@@ -944,7 +944,7 @@ fn par_build_lengths(
                 }
                 let skipped_entries = end - skip_end - 1;
                 let local_buffer_length = end - start;
-                let data = vec![0_u8; local_buffer_length];
+                let data = vec![0_u8; local_buffer_length * lengths_width];
                 let mut local_lengths = Lcp::new_with_width(data, lengths_width);
                 local_lengths.set(skip_end - start, current_length);
                 for i in (start..skip_end).rev() {
