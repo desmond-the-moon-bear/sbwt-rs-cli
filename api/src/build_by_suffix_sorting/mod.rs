@@ -67,7 +67,7 @@ pub fn build_with_bounded_suffix_array<SS: SubsetSeq + Send>(
     let mut result = None;
     thread_pool.scope(|scope| {
         scope.spawn(|_| {
-            let suffix_array = par_bounded_context_suffix_array_bucket_sort(&mut input, k, prefix_length_for_bucket_sort);
+            let suffix_array = par_bounded_context_suffix_array_bucket_sort(&mut input, k + 1, prefix_length_for_bucket_sort);
             let output = par_build::<SS>(threads, input, suffix_array, k, build_lcs, add_all_dummies, build_counts);
             result = Some(output);
         });
@@ -876,7 +876,7 @@ fn par_build_lcp(
                             k,
                             input,
                             word_count,
-                            previous_lcp_value.saturating_sub(2),
+                            previous_lcp_value.saturating_sub(1),
                             i,
                             phi[i]
                         ).min(k)
@@ -1761,23 +1761,9 @@ mod tests {
         (length as usize, lcp_value as usize)
     }
 
-    #[test]
-    fn build_lcp_and_lengths() {
-        let threads = 3;
-        let k = 17;
-
-        let seqs = seqs![
-            b"ACGACGACCACCGACACACAAACCCAAACGTGAACGTTAA",
-            b"ACCCAAAAGTGTGTGAGAGTGTGAGCAGTGCATGATGCAA",
-            b"GTGAGAGAGTGATGGACCAAAAAAAAAAAAAAAACCCGTA",
-            b"GAAAAAAAAAAAAAACCAMTGAGGAGAGAGAGGGGTTTTT",
-            b"ACMACMAGAMCAMMAGMAMCAMTGMAMMGATATGAGACMM",
-            b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            b"MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM",
-        ];
-
+    fn build_lcp_and_lengths(threads: usize, k: usize, seqs: Vec<Vec<u8>>) {
         let mut concatenation = make_concatenation(&seqs);
-        let suffix_array = make_suffix_array(&concatenation, k);
+        let suffix_array = make_suffix_array(&concatenation, k + 1);
         let length = suffix_array.len();
         pad_input(&mut concatenation, k, length);
 
@@ -1810,9 +1796,55 @@ mod tests {
                 current_suffix,
                 previous_suffix
             );
-            assert_eq!(length.min(k + 1), lengths.get(i), "lengths: {}", i);
-            assert_eq!(lcp_value.min(k), lcp.get(i), "lcp: {}", i);
+
+            let true_length = length.min(k + 1);
+            let true_lcp_value = lcp_value.min(k);
+            let built_length = lengths.get(i);
+            let built_lcp_value = lcp.get(i);
+
+            let end = (current_suffix + k + 1).min(concatenation.len());
+            let s = str::from_utf8(&concatenation[current_suffix..end]).unwrap();
+
+            println!(
+                "[len:{:4}|{:4}] [lcp:{:4}|{:4}] {}",
+                true_length,
+                built_length,
+                true_lcp_value,
+                built_lcp_value,
+                s,
+            );
+
+            assert_eq!(true_length, built_length, "lengths: {}", i);
+            assert_eq!(true_lcp_value, built_lcp_value, "lcp: {}", i);
         }
+    }
+
+    #[test]
+    fn build_lcp_and_lengths_01() {
+        let threads = 3;
+        let k = 17;
+        let seqs = seqs![
+            b"ACGACGACCACCGACACACAAACCCAAACGTGAACGTTAA",
+            b"ACCCAAAAGTGTGTGAGAGTGTGAGCAGTGCATGATGCAA",
+            b"GTGAGAGAGTGATGGACCAAAAAAAAAAAAAAAACCCGTA",
+            b"GAAAAAAAAAAAAAACCAMTGAGGAGAGAGAGGGGTTTTT",
+            b"ACMACMAGAMCAMMAGMAMCAMTGMAMMGATATGAGACMM",
+            b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            b"MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM",
+        ];
+
+        build_lcp_and_lengths(threads, k, seqs);
+    }
+
+    #[test]
+    fn build_lcp_and_lengths_02() {
+        let threads = 3;
+        let k = 3;
+        let seqs = seqs![
+            b"ATCGTTCGTTCGTTCG",
+        ];
+
+        build_lcp_and_lengths(threads, k, seqs);
     }
 
     #[test]
@@ -1844,7 +1876,7 @@ mod tests {
         seqs.dedup();
 
         let concatenation = make_concatenation(&seqs);
-        let suffix_array = make_suffix_array(&concatenation, k);
+        let suffix_array = make_suffix_array(&concatenation, k + 1);
 
         {
             // Without redundant dummies.
