@@ -582,6 +582,7 @@ pub fn par_bounded_context_suffix_array_bucket_sort(input: &mut Vec<u8>, k: usiz
 }
 
 fn compare_suffixes(input: &[u8], word_count: usize, mut cursor_a: usize, mut cursor_b: usize) -> std::cmp::Ordering {
+    let stable_order = cursor_a.cmp(&cursor_b);
     for _ in 0..word_count {
         let slice_a = &input[cursor_a..cursor_a + LANES];
         let simd_word_a = Word::new(slice_a.try_into().unwrap());
@@ -604,7 +605,7 @@ fn compare_suffixes(input: &[u8], word_count: usize, mut cursor_a: usize, mut cu
         return std::cmp::Ordering::Greater;
     }
 
-    std::cmp::Ordering::Equal
+    stable_order
 }
 
 pub(crate) struct FullAuxiliaryData {
