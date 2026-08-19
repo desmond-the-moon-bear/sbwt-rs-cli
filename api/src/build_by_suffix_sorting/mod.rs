@@ -67,7 +67,7 @@ pub fn build_with_bounded_suffix_array<SS: SubsetSeq + Send>(
     let mut result = None;
     thread_pool.scope(|scope| {
         scope.spawn(|_| {
-            let suffix_array = par_bounded_context_suffix_array_bucket_sort(&mut input, k + 1, prefix_length_for_bucket_sort);
+            let suffix_array = par_bounded_context_suffix_array_bucket_sort(&mut input, k, prefix_length_for_bucket_sort);
             let output = par_build::<SS>(threads, input, suffix_array, k, build_lcs, add_all_dummies, build_counts);
             result = Some(output);
         });
@@ -478,7 +478,7 @@ const MAX_PREFIX_LENGTH_FOR_BUCKET_SORT: usize = 8;
 /// The length is the length of the original input sequences. If the input buffer has length less
 /// than that, ensure that it is padded.
 fn pad_input(input: &mut Vec<u8>, k: usize, length: usize) {
-    let word_count = k.div_ceil(LANES);
+    let word_count = word_count(k);
     if input.len() > length {
         return;
     }
@@ -490,7 +490,7 @@ fn pad_input(input: &mut Vec<u8>, k: usize, length: usize) {
 pub fn par_bounded_context_suffix_array_bucket_sort(input: &mut Vec<u8>, k: usize, prefix_length_for_bucket_sort: usize) -> Vec<usize> {
     log::info!("[par_bounded_context_suffix_array_bucket_sort] begin");
     let length = input.len();
-    let word_count = k.div_ceil(LANES);
+    let word_count = word_count(k);
     let prefix_length_for_bucket_sort = prefix_length_for_bucket_sort.min(MAX_PREFIX_LENGTH_FOR_BUCKET_SORT);
     let bucket_count: usize = CHARACTER_COUNT.pow(prefix_length_for_bucket_sort as u32);
 
@@ -843,7 +843,7 @@ fn par_build_lcp(
         .collect();
 
     log::info!("[par_build_lcp] building plcp parts");
-    let word_count = k.div_ceil(LANES);
+    let word_count = word_count(k);
     let lcp_width = byte_width(k);
     let plcp_parts = Arc::new(Mutex::new(Vec::<(usize, Lcp)>::with_capacity(threads)));
     rayon::scope(|s| {
@@ -866,24 +866,38 @@ fn par_build_lcp(
                     start += 1;
                 }
 
+                use std::cmp::Ordering;
                 let mut previous_lcp_value: usize = 0;
+                let mut previous_shorter_than_k_lcp_value: usize = 0;
+                let mut previous_ordering = Ordering::Equal;
                 for i in start..end {
 
                     let lcp_value = if phi[i] == 0 {
+                        previous_ordering = Ordering::Equal;
                         0
                     } else {
-                        find_lcp_value(
+                        let start_lcp_value = if previous_lcp_value == k && previous_ordering == Ordering::Less {
+                            previous_shorter_than_k_lcp_value.saturating_sub(1)
+                        } else {
+                            previous_lcp_value.saturating_sub(1)
+                        };
+                        let (lcp_value, ordering) = find_lcp_value(
                             k,
-                            input,
                             word_count,
-                            previous_lcp_value.saturating_sub(1),
+                            input,
+                            start_lcp_value,
                             i,
                             phi[i]
-                        ).min(k)
+                        );
+                        previous_ordering = ordering;
+                        lcp_value.min(k)
                     };
 
                     local_lcp.push(lcp_value);
                     previous_lcp_value = lcp_value;
+                    if lcp_value < k {
+                        previous_shorter_than_k_lcp_value = lcp_value;
+                    }
                 }
 
                 lcp_result.lock().unwrap().push((thread_index, local_lcp));
@@ -1058,6 +1072,11 @@ fn byte_width(value: usize) -> usize {
     (bit_width.div_ceil(u8::BITS) as usize).next_power_of_two()
 }
 
+#[inline]
+fn word_count(k: usize) -> usize {
+    k.div_ceil(LANES)
+}
+
 fn par_concatenate_bytes<S, I>(context: &str, buffer: &mut [u8], sections: S)
 where S: Iterator<Item = I> + Send, I: AsRef<[u8]> + Send,
 {
@@ -1080,12 +1099,15 @@ where S: Iterator<Item = I> + Send, I: AsRef<[u8]> + Send,
 #[inline]
 fn find_lcp_value(
     k: usize,
-    input: &[u8],
     mut word_count: usize,
+    input: &[u8],
     start_lcp_value: usize,
     mut current_index: usize,
     mut previous_index: usize
-) -> usize {
+) -> (usize, std::cmp::Ordering) {
+    let offset = word_count * LANES;
+    let ordering = input[current_index + offset].cmp(&input[previous_index + offset]);
+
     word_count = (word_count * LANES - start_lcp_value).div_ceil(LANES);
     current_index += start_lcp_value;
     previous_index += start_lcp_value;
@@ -1116,7 +1138,7 @@ fn find_lcp_value(
         }
     }
 
-    lcp_value.min(length) as usize
+    (lcp_value.min(length) as usize, ordering)
 }
 
 struct DummyMarks {
@@ -1701,10 +1723,16 @@ mod tests {
         assert_eq!(b"#$TGCA$T$$$A$ACGT$".as_slice(), &concatenation);
     }
 
-    fn make_suffix_array(concatenation: &[u8], context: usize) -> Vec<usize> {
-        let mut suffix_array = (0..concatenation.len()).collect::<Vec<_>>();
-        suffix_array.sort_by_key(|index| &concatenation[*index..(*index + context).min(concatenation.len())]);
-        suffix_array
+    fn make_suffix_array(threads: usize, concatenation: &mut Vec<u8>, context: usize) -> Vec<usize> {
+        let thread_pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+        let mut result_op = None;
+        thread_pool.scope(|s| {
+            s.spawn(|_| {
+                let result = par_bounded_context_suffix_array_bucket_sort(concatenation, context, 4);
+                result_op = Some(result);
+            });
+        });
+        result_op.unwrap()
     }
 
     #[inline]
@@ -1763,7 +1791,7 @@ mod tests {
 
     fn build_lcp_and_lengths(threads: usize, k: usize, seqs: Vec<Vec<u8>>) {
         let mut concatenation = make_concatenation(&seqs);
-        let suffix_array = make_suffix_array(&concatenation, k + 1);
+        let suffix_array = make_suffix_array(threads, &mut concatenation, k);
         let length = suffix_array.len();
         pad_input(&mut concatenation, k, length);
 
@@ -1785,7 +1813,8 @@ mod tests {
         let lcp = lcp_op.unwrap();
         let lengths = lengths_op.unwrap();
 
-        let word_count = k.div_ceil(LANES);
+        let mut ok = true;
+        let word_count = word_count(k);
         for i in 1..length {
             let current_suffix = suffix_array[i];
             let previous_suffix = suffix_array[i - 1];
@@ -1802,11 +1831,12 @@ mod tests {
             let built_length = lengths.get(i);
             let built_lcp_value = lcp.get(i);
 
-            let end = (current_suffix + k + 1).min(concatenation.len());
+            let end = (current_suffix + k).min(concatenation.len());
             let s = str::from_utf8(&concatenation[current_suffix..end]).unwrap();
 
             println!(
-                "[len:{:4}|{:4}] [lcp:{:4}|{:4}] {}",
+                "[{:4}] [len:{:4}|{:4}] [lcp:{:4}|{:4}] {}",
+                current_suffix,
                 true_length,
                 built_length,
                 true_lcp_value,
@@ -1814,9 +1844,10 @@ mod tests {
                 s,
             );
 
-            assert_eq!(true_length, built_length, "lengths: {}", i);
-            assert_eq!(true_lcp_value, built_lcp_value, "lcp: {}", i);
+            ok &= true_length == built_length;
+            ok &= true_lcp_value == built_lcp_value;
         }
+        assert!(ok);
     }
 
     #[test]
@@ -1842,6 +1873,7 @@ mod tests {
         let k = 3;
         let seqs = seqs![
             b"ATCGTTCGTTCGTTCG",
+            b"ATTTTTTTTTTTTCGTTTTTTTTTTTTTCGTTTTTTTTTTTTTCGTTTTTTTTTTTTTCG",
         ];
 
         build_lcp_and_lengths(threads, k, seqs);
@@ -1875,8 +1907,8 @@ mod tests {
         seqs.sort();
         seqs.dedup();
 
-        let concatenation = make_concatenation(&seqs);
-        let suffix_array = make_suffix_array(&concatenation, k + 1);
+        let mut concatenation = make_concatenation(&seqs);
+        let suffix_array = make_suffix_array(4, &mut concatenation, k);
 
         {
             // Without redundant dummies.
