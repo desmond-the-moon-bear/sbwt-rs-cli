@@ -872,49 +872,50 @@ fn par_build_lcp(
                 }
 
                 let mut previous_lcp_value: usize = 0;
-                let mut previous_length: usize = 1;
+                let mut previous_length: usize = 0;
                 for i in start..end {
-                    let previous_suffix = phi_slice[i - start];
+                    let phi_index = i - start;
+                    let previous_suffix = phi_slice[phi_index];
                     let mut lcp_value = 0;
 
-                    if previous_suffix != 0 {
-                        let start_lcp_value = if previous_lcp_value < previous_length {
-                            // println!("{} previous_lcp_value < previous_length: {} < {}", i, previous_lcp_value, previous_length);
+                    if previous_suffix == 0 {
+                        local_lcp.push(0);
+                        previous_lcp_value = 0;
+                        previous_length = 0;
+                        continue;
+                    }
+
+                    let start_lcp_value = if i == start || previous_lcp_value < previous_length {
+                        previous_lcp_value.saturating_sub(1)
+                    } else {
+                        let current_corrected_comparison_check = corrected_comparison_was_done.get(previous_suffix);
+                        if current_corrected_comparison_check {
                             previous_lcp_value.saturating_sub(1)
                         } else {
-                            let current_corrected_comparison_check = corrected_comparison_was_done.get(previous_suffix);
-                            if current_corrected_comparison_check {
-                                // println!("{} current_corrected_comparison_check = true", i);
-                                previous_lcp_value.saturating_sub(1)
-                            } else {
-                                // println!("{} current_corrected_comparison_check = false", i);
-                                // println!("{} start_lcp_value = {}", i, phi_slice[i - start - 1].saturating_sub(1));
-                                corrected_comparison_was_done.set(i, true);
-                                phi_slice[i - start - 1].saturating_sub(1)
-                            }
-                        };
-                        let (value, length) = find_lcp_value(
-                            k,
-                            word_count,
-                            input,
-                            start_lcp_value,
-                            i,
-                            previous_suffix
-                        );
-                        previous_length = length;
-                        lcp_value = value.min(k);
-                        if lcp_value >= length && i > start {
-                            phi_slice[i - start] = phi_slice[i - start - 1].saturating_sub(1);
-                        } else {
-                            phi_slice[i - start] = previous_lcp_value.saturating_sub(1);
+                            corrected_comparison_was_done.set(i, true);
+                            phi_slice[phi_index - 1].saturating_sub(1)
                         }
-                        // if lcp_value == 0 {
-                        //     println!("{} {}", i, start_lcp_value);
-                        // }
                     };
 
+                    let (value, length) = find_lcp_value(
+                        k,
+                        word_count,
+                        input,
+                        start_lcp_value,
+                        i,
+                        previous_suffix
+                    );
+
+                    lcp_value = value.min(k);
                     local_lcp.push(lcp_value);
                     previous_lcp_value = lcp_value;
+                    previous_length = length;
+
+                    if phi_index == 0 || lcp_value < length {
+                        phi_slice[phi_index] = lcp_value;
+                    } else {
+                        phi_slice[phi_index] = phi_slice[phi_index - 1].saturating_sub(1);
+                    }
                 }
 
                 plcp_parts.lock().unwrap().push((thread_index, local_lcp));
@@ -1126,9 +1127,6 @@ fn find_lcp_value(
     current_index += start_lcp_value;
     previous_index += start_lcp_value;
 
-    let i = current_index;
-    let j = previous_index;
-
     let k = k as u32;
     let mut lcp_value = start_lcp_value as u32;
     let mut length    = lcp_value;
@@ -1155,7 +1153,6 @@ fn find_lcp_value(
         }
     }
 
-    println!("from find_lcp_value: {} {} {} {}", i, j, lcp_value, length);
     length = length.min(k);
     (lcp_value.min(length) as usize, length as usize)
 }
