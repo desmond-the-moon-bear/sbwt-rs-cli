@@ -807,7 +807,7 @@ fn par_build_lcp(
     k: usize,
 ) -> Lcp {
     log::info!("[par_build_lcp] begin");
-    use std::sync::atomic::Ordering;
+    use std::sync::atomic;
 
     let length = suffix_array.len();
     let phi: Vec<AtomicUsize> = vec![0_usize; length]
@@ -831,30 +831,34 @@ fn par_build_lcp(
                 for j in start..end {
                     let phi_index = suffix_array[j];
                     let value = suffix_array[j - 1];
-                    phi[phi_index].store(value, Ordering::Release);
+                    phi[phi_index].store(value, atomic::Ordering::Release);
                 }
             });
         }
     });
 
-    let phi: Vec<usize> = phi
+    let mut phi: Vec<usize> = phi
         .into_iter()
-        .map(|value| value.load(Ordering::Relaxed))
+        .map(|value| value.load(atomic::Ordering::Relaxed))
         .collect();
+    let corrected_comparison_was_done = AtomicBitmap::new(length);
 
     log::info!("[par_build_lcp] building plcp parts");
     let word_count = word_count(k);
     let lcp_width = byte_width(k);
     let plcp_parts = Arc::new(Mutex::new(Vec::<(usize, Lcp)>::with_capacity(threads)));
     rayon::scope(|s| {
-        let lcp_result = &plcp_parts;
-        let phi = &phi;
+        let plcp_parts = &plcp_parts;
+        let corrected_comparison_was_done = &corrected_comparison_was_done;
+        let mut phi: &mut [usize] = &mut phi;
 
         for thread_index in 0..threads {
             let mut start = thread_index * thread_region_length;
             let end = (start + thread_region_length).min(length);
+            let local_region_length = end - start;
+            let (phi_slice, suffix) = phi.split_at_mut(local_region_length);
+            phi = suffix;
             s.spawn(move |_| {
-                let local_region_length = end - start;
                 let mut local_lcp = {
                     let mut capacity = local_region_length * lcp_width;
                     let data = Vec::<u8>::with_capacity(capacity);
@@ -866,41 +870,45 @@ fn par_build_lcp(
                     start += 1;
                 }
 
-                use std::cmp::Ordering;
+                // use std::cmp::Ordering;
                 let mut previous_lcp_value: usize = 0;
-                let mut previous_shorter_than_k_lcp_value: usize = 0;
-                let mut previous_ordering = Ordering::Equal;
+                let mut previous_length: usize = 1;
                 for i in start..end {
-
-                    let lcp_value = if phi[i] == 0 {
-                        previous_ordering = Ordering::Equal;
-                        0
-                    } else {
-                        let start_lcp_value = if previous_lcp_value == k && previous_ordering == Ordering::Less {
-                            previous_shorter_than_k_lcp_value.saturating_sub(1)
-                        } else {
+                    let previous_suffix = phi_slice[i - start];
+                    let mut lcp_value = 0;
+                    if previous_suffix != 0 {
+                        let start_lcp_value = if previous_lcp_value < previous_length {
                             previous_lcp_value.saturating_sub(1)
+                        } else {
+                            let current_corrected_comparison_check = corrected_comparison_was_done.get(previous_suffix);
+                            if current_corrected_comparison_check {
+                                previous_lcp_value.saturating_sub(1)
+                            } else {
+                                corrected_comparison_was_done.set(i, true);
+                                phi_slice[i - start - 1].saturating_sub(1)
+                            }
                         };
-                        let (lcp_value, ordering) = find_lcp_value(
+                        let (value, length) = find_lcp_value(
                             k,
                             word_count,
                             input,
                             start_lcp_value,
                             i,
-                            phi[i]
+                            previous_suffix
                         );
-                        previous_ordering = ordering;
-                        lcp_value.min(k)
+                        previous_length = length;
+                        lcp_value = value.min(k);
+                        phi_slice[i - start] = previous_lcp_value;
+                        if lcp_value == 0 {
+                            println!("{} {}", i, start_lcp_value);
+                        }
                     };
 
                     local_lcp.push(lcp_value);
                     previous_lcp_value = lcp_value;
-                    if lcp_value < k {
-                        previous_shorter_than_k_lcp_value = lcp_value;
-                    }
                 }
 
-                lcp_result.lock().unwrap().push((thread_index, local_lcp));
+                plcp_parts.lock().unwrap().push((thread_index, local_lcp));
             });
         }
     });
@@ -1104,10 +1112,7 @@ fn find_lcp_value(
     start_lcp_value: usize,
     mut current_index: usize,
     mut previous_index: usize
-) -> (usize, std::cmp::Ordering) {
-    let offset = word_count * LANES;
-    let ordering = input[current_index + offset].cmp(&input[previous_index + offset]);
-
+) -> (usize, usize) {
     word_count = (word_count * LANES - start_lcp_value).div_ceil(LANES);
     current_index += start_lcp_value;
     previous_index += start_lcp_value;
@@ -1138,7 +1143,8 @@ fn find_lcp_value(
         }
     }
 
-    (lcp_value.min(length) as usize, ordering)
+    // (lcp_value.min(length) as usize, length as usize, ordering)
+    (lcp_value.min(length) as usize, length as usize)
 }
 
 struct DummyMarks {
@@ -1873,7 +1879,21 @@ mod tests {
         let k = 3;
         let seqs = seqs![
             b"ATCGTTCGTTCGTTCG",
-            b"ATTTTTTTTTTTTCGTTTTTTTTTTTTTCGTTTTTTTTTTTTTCGTTTTTTTTTTTTTCG",
+            // b"ATTTTTTTTTTTTCGTTTTTTTTTTTTTCGTTTTTTTTTTTTTCGTTTTTTTTTTTTTCG",
+        ];
+
+        build_lcp_and_lengths(threads, k, seqs);
+    }
+
+    #[test]
+    fn build_lcp_and_lengths_03() {
+        let threads = 3;
+        let k = 16;
+        let seqs = seqs![
+            b"GCTTTTTTTTTTTTTAA",
+            b"GCTTTTTTTTTTTTAAA",
+            b"GCTTTTTTTTTTTTTTT",
+            b"GCTTTTTTTTTTTTTTA",
         ];
 
         build_lcp_and_lengths(threads, k, seqs);
