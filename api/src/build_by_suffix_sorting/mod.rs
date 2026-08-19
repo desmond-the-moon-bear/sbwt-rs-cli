@@ -856,7 +856,7 @@ fn par_build_lcp(
             let mut start = thread_index * thread_region_length;
             let end = (start + thread_region_length).min(length);
             let local_region_length = end - start;
-            let (phi_slice, suffix) = phi.split_at_mut(local_region_length);
+            let (mut phi_slice, suffix) = phi.split_at_mut(local_region_length);
             phi = suffix;
             s.spawn(move |_| {
                 let mut local_lcp = {
@@ -868,22 +868,27 @@ fn par_build_lcp(
                 if start == 0 {
                     local_lcp.push(0);
                     start += 1;
+                    phi_slice = &mut phi_slice[1..];
                 }
 
-                // use std::cmp::Ordering;
                 let mut previous_lcp_value: usize = 0;
                 let mut previous_length: usize = 1;
                 for i in start..end {
                     let previous_suffix = phi_slice[i - start];
                     let mut lcp_value = 0;
+
                     if previous_suffix != 0 {
                         let start_lcp_value = if previous_lcp_value < previous_length {
+                            // println!("{} previous_lcp_value < previous_length: {} < {}", i, previous_lcp_value, previous_length);
                             previous_lcp_value.saturating_sub(1)
                         } else {
                             let current_corrected_comparison_check = corrected_comparison_was_done.get(previous_suffix);
                             if current_corrected_comparison_check {
+                                // println!("{} current_corrected_comparison_check = true", i);
                                 previous_lcp_value.saturating_sub(1)
                             } else {
+                                // println!("{} current_corrected_comparison_check = false", i);
+                                // println!("{} start_lcp_value = {}", i, phi_slice[i - start - 1].saturating_sub(1));
                                 corrected_comparison_was_done.set(i, true);
                                 phi_slice[i - start - 1].saturating_sub(1)
                             }
@@ -898,10 +903,14 @@ fn par_build_lcp(
                         );
                         previous_length = length;
                         lcp_value = value.min(k);
-                        phi_slice[i - start] = previous_lcp_value;
-                        if lcp_value == 0 {
-                            println!("{} {}", i, start_lcp_value);
+                        if lcp_value >= length && i > start {
+                            phi_slice[i - start] = phi_slice[i - start - 1].saturating_sub(1);
+                        } else {
+                            phi_slice[i - start] = previous_lcp_value.saturating_sub(1);
                         }
+                        // if lcp_value == 0 {
+                        //     println!("{} {}", i, start_lcp_value);
+                        // }
                     };
 
                     local_lcp.push(lcp_value);
@@ -1117,6 +1126,9 @@ fn find_lcp_value(
     current_index += start_lcp_value;
     previous_index += start_lcp_value;
 
+    let i = current_index;
+    let j = previous_index;
+
     let k = k as u32;
     let mut lcp_value = start_lcp_value as u32;
     let mut length    = lcp_value;
@@ -1143,7 +1155,8 @@ fn find_lcp_value(
         }
     }
 
-    // (lcp_value.min(length) as usize, length as usize, ordering)
+    println!("from find_lcp_value: {} {} {} {}", i, j, lcp_value, length);
+    length = length.min(k);
     (lcp_value.min(length) as usize, length as usize)
 }
 
@@ -1772,7 +1785,7 @@ mod tests {
             if !stop_accumulating_length {
                 let bitmask = simd_word_current.simd_eq(b'$').to_bitmask() as Bitmask;
                 length += bitmask.trailing_zeros();
-                stop_accumulating_length |= length >= k || bitmask != 0;
+                stop_accumulating_length |= length > k || bitmask != 0;
             }
 
             if !found_lcp {
@@ -1887,6 +1900,20 @@ mod tests {
 
     #[test]
     fn build_lcp_and_lengths_03() {
+        let threads = 3;
+        let k = 16;
+        let seqs = seqs![
+            b"AATTTTTTTTTTTTTCG",
+            b"AAATTTTTTTTTTTTCG",
+            b"TTTTTTTTTTTTTTTCG",
+            b"ATTTTTTTTTTTTTTCG",
+        ];
+
+        build_lcp_and_lengths(threads, k, seqs);
+    }
+
+    #[test]
+    fn build_lcp_and_lengths_04() {
         let threads = 3;
         let k = 16;
         let seqs = seqs![
