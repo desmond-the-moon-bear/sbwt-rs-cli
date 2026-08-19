@@ -841,7 +841,6 @@ fn par_build_lcp(
         .into_iter()
         .map(|value| value.load(atomic::Ordering::Relaxed))
         .collect();
-    let corrected_comparison_was_done = AtomicBitmap::new(length);
 
     log::info!("[par_build_lcp] building plcp parts");
     let word_count = word_count(k);
@@ -849,7 +848,6 @@ fn par_build_lcp(
     let plcp_parts = Arc::new(Mutex::new(Vec::<(usize, Lcp)>::with_capacity(threads)));
     rayon::scope(|s| {
         let plcp_parts = &plcp_parts;
-        let corrected_comparison_was_done = &corrected_comparison_was_done;
         let mut phi: &mut [usize] = &mut phi;
 
         for thread_index in 0..threads {
@@ -888,11 +886,9 @@ fn par_build_lcp(
                     let start_lcp_value = if i == start || previous_lcp_value < previous_length {
                         previous_lcp_value.saturating_sub(1)
                     } else {
-                        let current_corrected_comparison_check = corrected_comparison_was_done.get(previous_suffix);
-                        if current_corrected_comparison_check {
+                        if start < previous_suffix && previous_suffix < i {
                             previous_lcp_value.saturating_sub(1)
                         } else {
-                            corrected_comparison_was_done.set(i, true);
                             phi_slice[phi_index - 1].saturating_sub(1)
                         }
                     };
