@@ -1,8 +1,8 @@
 use simple_sds_sbwt::serialize::Serialize;
 
-pub trait StreamBuilder<'a, T: Send + Sync> {
-    type Stream: Iterator<Item = T> + Send + 'a;
-    fn build(&'a self, offset: usize) -> Self::Stream;
+pub trait StreamBuilder<T: Send + Sync> {
+    type Stream<'a>: Iterator<Item = T> + Send + 'a where Self: 'a;
+    fn build<'a>(&'a self, offset: usize) -> Self::Stream<'a>;
 }
 
 pub struct MemoryStream<T> {
@@ -29,34 +29,14 @@ impl<T> From<MemoryStream<T>> for Vec<T> {
     }
 }
 
-pub struct MemoryStreamIterator<'a, T> {
-    offset: usize,
-    data: &'a MemoryStream<T>,
-}
-
-impl<'a, T: Send + Sync + Copy> StreamBuilder<'a, T> for MemoryStream<T>
-where T: 'a {
-    type Stream = MemoryStreamIterator<'a, T>;
-
-    fn build(&'a self, offset: usize) -> Self::Stream {
-        MemoryStreamIterator {
-            offset,
-            data: self,
-        }
-    }
-}
-
-impl<'a, T: Copy> Iterator for MemoryStreamIterator<'a, T> {
-    type Item = T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.offset >= self.data.data.len() {
-            return None;
-        }
-
-        let result = Some(self.data.data[self.offset]);
-        self.offset += 1;
-        result
+use std::iter::Copied;
+use std::slice::Iter;
+impl<T> StreamBuilder<T> for MemoryStream<T>
+where T: Send + Sync + Copy
+{
+    type Stream<'a> = Copied<Iter<'a, T>> where Self: 'a;
+    fn build<'a>(&'a self, offset: usize) -> Self::Stream<'a> {
+        self.data[offset..].iter().copied()
     }
 }
 
@@ -94,11 +74,11 @@ pub struct DiskStreamIterator<'a, T: CWS> {
     _disk_stream: &'a DiskStream<T>,
 }
 
-impl<'a, T: CWS> StreamBuilder<'a, T> for DiskStream<T>
-where T: 'a {
-    type Stream = DiskStreamIterator<'a, T>;
+impl<T: CWS> StreamBuilder<T> for DiskStream<T>
+{
+    type Stream<'a> = DiskStreamIterator<'a, T> where Self: 'a;
 
-    fn build(&'a self, offset: usize) -> Self::Stream {
+    fn build<'a>(&'a self, offset: usize) -> Self::Stream<'a> {
         use std::io::{Seek, SeekFrom};
         let byte_offset = (offset * T::byte_size()) as u64;
         let mut file = std::fs::File::open(&self.file.path).unwrap();
