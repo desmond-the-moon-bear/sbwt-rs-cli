@@ -121,6 +121,7 @@
 
 pub mod preprocessing;
 pub mod input_structures;
+pub mod stream;
 
 use input_structures::{Bwt, Lcp, CHAR_TO_INDEX};
 use crate::atomic_bitmap::AtomicBitmap;
