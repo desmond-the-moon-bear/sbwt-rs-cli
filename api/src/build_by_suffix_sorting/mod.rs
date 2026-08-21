@@ -123,8 +123,10 @@ pub mod preprocessing;
 pub mod input_structures;
 pub mod stream;
 
+use stream::StreamBuilder;
 use input_structures::{Bwt, Lcp, CHAR_TO_INDEX};
 use crate::atomic_bitmap::AtomicBitmap;
+use crate::build_by_suffix_sorting::stream::MemoryStream;
 use crate::vodbg::count::{Counts, Sample};
 use crate::{LcsArray, SbwtIndex, SubsetSeq};
 
@@ -161,21 +163,26 @@ pub struct Output<SS: SubsetSeq + Send> {
     pub counts: Option<Counts>,
 }
 
-pub fn build<SS: SubsetSeq + Send>(
+#[allow(clippy::too_many_arguments)]
+pub fn build<'a, SS, SB>(
     threads: usize,
     input: Vec<u8>,
-    suffix_array: Vec<usize>,
+    length: usize,
+    suffix_array: SB,
     k: usize,
     build_lcs: bool,
     add_all_dummies: bool,
     build_counts: bool
-) -> Output<SS> {
+) -> Output<SS>
+where SS: SubsetSeq + Send,
+      SB: StreamBuilder<'a, usize> + Send + Sync + 'a
+{
     log::info!("[build] begin");
     let thread_pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
     let mut result = None;
     thread_pool.scope(|scope| {
         scope.spawn(|_| {
-            let output = par_build(threads, input, suffix_array, k, build_lcs, add_all_dummies, build_counts, false);
+            let output = par_build(threads, input, length, suffix_array, k, build_lcs, add_all_dummies, build_counts, false);
             result = Some(output);
         });
     });
@@ -190,15 +197,31 @@ pub fn build_with_bounded_suffix_array<SS: SubsetSeq + Send>(
     prefix_length_for_bucket_sort: usize,
     build_lcs: bool,
     add_all_dummies: bool,
-    build_counts: bool
+    build_counts: bool,
+    stream_suffix_array_from_disk: bool,
+    temp_dir: Option<&std::path::Path>,
 ) -> Output<SS> {
     log::info!("[build_with_bounded_suffix_array] begin");
     let thread_pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
     let mut result = None;
+    let _ = stream_suffix_array_from_disk;
+    let _ = temp_dir;
     thread_pool.scope(|scope| {
         scope.spawn(|_| {
             let suffix_array = par_bounded_context_suffix_array_bucket_sort(&mut input, k, prefix_length_for_bucket_sort);
-            let output = par_build::<SS>(threads, input, suffix_array, k, build_lcs, add_all_dummies, build_counts, true);
+            let length = suffix_array.len();
+            let stream_builder = MemoryStream::new(suffix_array);
+            let output = par_build::<SS, MemoryStream<usize>>(
+                threads,
+                input,
+                length,
+                stream_builder,
+                k,
+                build_lcs,
+                add_all_dummies,
+                build_counts,
+                true
+            );
             result = Some(output);
         });
     });
@@ -207,40 +230,65 @@ pub fn build_with_bounded_suffix_array<SS: SubsetSeq + Send>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn par_build<SS: SubsetSeq + Send>(
+pub fn par_build<'a, SS, SB>(
     threads: usize,
     input: Vec<u8>,
-    suffix_array: Vec<usize>,
+    length: usize,
+    suffix_array: SB,
     k: usize,
     build_lcs: bool,
     add_all_dummies: bool,
     build_counts: bool,
     is_bounded_suffix_array: bool,
-) -> Output<SS> {
+) -> Output<SS>
+where SS: SubsetSeq + Send,
+      SB: StreamBuilder<'a, usize> + Send + Sync + 'a,
+{
     log::info!(
         "[par_build] begin [length: {} | build_lcs: {} | add_all_dummies: {} | build_counts {}]",
         input.len(), build_lcs, add_all_dummies, build_counts
     );
     let output = if !add_all_dummies {
-        par_build_without_redundant_dummies(threads, input, suffix_array, k, build_lcs, is_bounded_suffix_array)
+        par_build_without_redundant_dummies(
+            threads,
+            input,
+            length,
+            suffix_array,
+            k,
+            build_lcs,
+            is_bounded_suffix_array
+        )
     } else {
-        par_build_with_all_dummies(threads, input, suffix_array, k, build_lcs, build_counts, is_bounded_suffix_array)
+        par_build_with_all_dummies(
+            threads,
+            input,
+            length,
+            suffix_array,
+            k,
+            build_lcs,
+            build_counts,
+            is_bounded_suffix_array
+        )
     };
     log::info!("[par_build] done");
     output
 }
 
-pub fn par_build_without_redundant_dummies<SS: SubsetSeq + Send>(
+pub fn par_build_without_redundant_dummies<'a, SS, SB>(
     threads: usize,
     input: Vec<u8>,
-    bounded_context_suffix_array: Vec<usize>,
+    length: usize,
+    suffix_array: SB,
     k: usize,
     build_lcs: bool,
     is_bounded_suffix_array: bool
-) -> Output<SS> {
+) -> Output<SS>
+where SS: SubsetSeq + Send,
+      SB: StreamBuilder<'a, usize> + Send + Sync + 'a,
+{
     log::info!("[par_build_without_redundant_dummies] begin");
     let _ = threads;
-    let aux = par_build_full_auxiliary_data(threads, input, bounded_context_suffix_array, k, is_bounded_suffix_array);
+    let aux = par_build_full_auxiliary_data(threads, input, length, suffix_array, k, is_bounded_suffix_array);
     let dummy_marks = par_build_dummy_marks(threads, k, &aux);
     let kmer_count = aux.kmer_count;
 
@@ -772,10 +820,11 @@ pub(crate) struct FullAuxiliaryData {
     pub(crate) k_ranges: RawVector,
 }
 
-fn par_build_full_auxiliary_data(
+fn par_build_full_auxiliary_data<'a, SB: StreamBuilder<'a, usize> + Send + Sync + 'a>(
     threads: usize,
     mut input: Vec<u8>,
-    suffix_array: Vec<usize>,
+    length: usize,
+    suffix_array: SB,
     k: usize,
     is_bounded_suffix_array: bool,
 ) -> FullAuxiliaryData {
@@ -793,11 +842,9 @@ fn par_build_full_auxiliary_data(
     // A big range can be further divided into k-ranges.
 
     log::info!("[par_build_full_auxiliary_data] begin");
-
-    let length = suffix_array.len();
     pad_input(&mut input, k, length);
 
-    let lcp = par_build_lcp(threads, &input, &suffix_array, k, is_bounded_suffix_array);
+    let lcp = par_build_lcp(threads, &input, length, &suffix_array, k, is_bounded_suffix_array);
     let lengths = par_build_lengths(threads, &input, &suffix_array, k);
 
     log::info!("[par_build_full_auxiliary_data] done with LCP and Lengths");
@@ -831,12 +878,13 @@ fn par_build_full_auxiliary_data(
         let k_ranges           = &k_ranges;
 
         for thread_index in 0..threads {
+            let start = 1 + thread_index * region_size;
+            let end = (start + region_size).min(length);
+            let mut stream = suffix_array.build(start);
             s.spawn(move |_| {
-                let start = 1 + thread_index * region_size;
-                let end = (start + region_size).min(length);
-
-                for index in start..end {
-                    let current_suffix_index = suffix_array[index];
+                for (mut index, value) in stream.enumerate() {
+                    index += start;
+                    let current_suffix_index = value;
 
                     // Set the bit in the bitvector corresponding to the previous character in the input
                     // for the (bounded) BWT.
@@ -938,17 +986,17 @@ fn par_build_full_auxiliary_data(
 }
 
 #[allow(unused)]
-fn par_build_lcp(
+fn par_build_lcp<'a, SB: StreamBuilder<'a, usize> + Send + Sync>(
     threads: usize,
     input: &[u8],
-    suffix_array: &[usize],
+    length: usize,
+    suffix_array: &'a SB,
     k: usize,
     is_bounded_suffix_array: bool,
 ) -> Lcp {
     log::info!("[par_build_lcp] begin");
     use std::sync::atomic::Ordering;
 
-    let length = suffix_array.len();
     let phi: Vec<AtomicUsize> = vec![0_usize; length]
         .into_iter()
         .map(AtomicUsize::new)
@@ -967,10 +1015,12 @@ fn par_build_lcp(
                 if start == 0 {
                     start += 1;
                 }
-                for j in start..end {
-                    let phi_index = suffix_array[j];
-                    let value = suffix_array[j - 1];
-                    phi[phi_index].store(value, Ordering::Release);
+                let mut stream = suffix_array.build(start - 1);
+                let mut previous_suffix_array_value = stream.next().unwrap();
+                for (index, value) in stream.enumerate() {
+                    let j = index + start;
+                    phi[value].store(previous_suffix_array_value, Ordering::Release);
+                    previous_suffix_array_value = value;
                 }
             });
         }
@@ -1045,17 +1095,17 @@ fn par_build_lcp(
         unordered_plcp_parts.sort_by_key(|(index, _)| *index);
         unordered_plcp_parts.into_iter().map(|(_, part)| part).collect::<Vec<_>>()
     };
-    let lcp = par_reorder_parts(threads, suffix_array, lcp_width, plcp_parts);
+    let lcp = par_reorder_parts(threads, length, suffix_array, lcp_width, plcp_parts);
 
     log::info!("[par_build_lcp] done");
     lcp
 }
 
 #[allow(unused)]
-fn par_build_lengths(
+fn par_build_lengths<'a, SB: StreamBuilder<'a, usize> + Sync>(
     threads: usize,
     input: &[u8],
-    suffix_array: &[usize],
+    suffix_array: &SB,
     k: usize,
 ) -> Lcp {
     log::info!("[par_build_lengths] begin");
@@ -1146,8 +1196,9 @@ fn par_build_lengths(
     lengths
 }
 
-fn par_reorder_parts(threads: usize, suffix_array: &[usize], width: usize, parts: Vec<Lcp>) -> Lcp {
-    let length = suffix_array.len();
+fn par_reorder_parts<'a, SB: StreamBuilder<'a, usize> + Send + Sync>(
+    threads: usize, length: usize, suffix_array: &SB, width: usize, parts: Vec<Lcp>
+) -> Lcp {
     let thread_region_length = length.div_ceil(threads);
     let mut buffer = vec![0_u8; length * width];
     par_concatenate_bytes(
@@ -1167,8 +1218,10 @@ fn par_reorder_parts(threads: usize, suffix_array: &[usize], width: usize, parts
             let start = thread_index * thread_region_length;
             let end = (start + thread_region_length).min(length);
             s.spawn(move |_| {
-                for i in start..end {
-                    let value = permuted.get(suffix_array[i]);
+                let mut stream = suffix_array.build(start);
+                for (index, value) in stream.enumerate() {
+                    let i = index + start;
+                    let value = permuted.get(value);
                     part.set(i - start, value);
                 }
 
@@ -1396,23 +1449,25 @@ fn keep_predecessors_atomic(
     }
 }
 
-pub fn par_build_with_all_dummies<SS: SubsetSeq + Send>(
+pub fn par_build_with_all_dummies<'a, SS, SB>(
     threads: usize,
     mut input: Vec<u8>,
-    suffix_array: Vec<usize>,
+    length: usize,
+    suffix_array: SB,
     k: usize,
     build_lcs: bool,
     build_counts: bool,
     is_bounded_suffix_array: bool,
-) -> Output<SS> {
+) -> Output<SS>
+where SS: SubsetSeq + Send,
+      SB: StreamBuilder<'a, usize> + Send 
+{
     log::info!("[par_build_with_all_dummies] begin");
-    let length = suffix_array.len();
     pad_input(&mut input, k, length);
 
     let lcp = par_build_lcp(threads, &input, &suffix_array, k, is_bounded_suffix_array);
     let lengths = par_build_lengths(threads, &input, &suffix_array, k);
 
-    let length = suffix_array.len();
     let results = Arc::new(Mutex::new(Vec::<SbwtAllDummiesRegionResult>::with_capacity(threads)));
     let threads_total_length = length - 1;
     let thread_region_length = threads_total_length.div_ceil(threads);
@@ -2068,7 +2123,7 @@ mod tests {
                 sbwt: constructed_sbwt,
                 lcs: constructed_lcs,
                 counts
-            } = build_with_bounded_suffix_array::<SubsetMatrix>(4, concatenation.clone(), k, 4, true, false, false);
+            } = build_with_bounded_suffix_array::<SubsetMatrix>(4, concatenation.clone(), k, 4, true, false, false, false, None);
 
             let correct_lcs = correct_lcs.unwrap();
             let constructed_lcs = constructed_lcs.unwrap();
@@ -2082,7 +2137,16 @@ mod tests {
                 sbwt: constructed_sbwt,
                 lcs: constructed_lcs,
                 counts
-            } = build::<SubsetMatrix>(4, concatenation.clone(), suffix_array.clone(), k, true, false, false);
+            } = build::<SubsetMatrix, MemoryStream<usize>>(
+                4,
+                concatenation.clone(),
+                concatenation.len(),
+                suffix_array.clone().into(),
+                k,
+                true,
+                false,
+                false
+            );
 
             let constructed_lcs = constructed_lcs.unwrap();
             assert!(counts.is_none());
@@ -2102,7 +2166,7 @@ mod tests {
                 sbwt: constructed_sbwt,
                 lcs: constructed_lcs,
                 counts
-            } = build_with_bounded_suffix_array::<SubsetMatrix>(4, concatenation.clone(), k, 4, true, true, true);
+            } = build_with_bounded_suffix_array::<SubsetMatrix>(4, concatenation.clone(), k, 4, true, true, true, false, None);
 
             let correct_lcs = correct_lcs.unwrap();
             let constructed_lcs = constructed_lcs.unwrap();
@@ -2129,7 +2193,16 @@ mod tests {
                 sbwt: mut constructed_sbwt,
                 lcs: constructed_lcs,
                 counts
-            } = build::<SubsetMatrix>(4, concatenation, suffix_array, k, true, true, true);
+            } = build::<SubsetMatrix, MemoryStream<usize>>(
+                4,
+                concatenation,
+                suffix_array.len(),
+                suffix_array.into(),
+                k,
+                true,
+                true,
+                true
+            );
 
             constructed_sbwt.build_select();
             let constructed_lcs = constructed_lcs.unwrap();

@@ -457,6 +457,9 @@ impl<SS: SeqStream + Send> BuildByBoundedSuffixSort<SS> {
                 self.build_lcs,
                 self.add_all_dummy_paths,
                 false, // Counts are not part of the return value of this interface
+
+                false, // For now don't change the API.
+                None
             );
 
         if self.build_select_support {
@@ -594,18 +597,17 @@ impl<SS: SeqStream + Send> BuildByLibsais<SS> {
 
         let mut concatenation = Vec::<u8>::new();
         crate::build_by_suffix_sorting::preprocessing::concatenate_sequences(&mut input, &mut concatenation).unwrap();
+        let length = concatenation.len();
 
-        // let (bwt_bytes, lcp_bytes) = libsais_bwt_and_lcp(&concatenation, self.n_threads);
         let suffix_array = libsais_suffix_array(&concatenation, self.n_threads);
+        let stream_builder = crate::build_by_suffix_sorting::stream::MemoryStream::new(suffix_array);
 
         let crate::build_by_suffix_sorting::Output{mut sbwt, lcs, counts: _} =
             crate::build_by_suffix_sorting::build::<SubsetMatrix>(
                 self.n_threads,
                 concatenation,
-                suffix_array,
-                // &mut bwt_bytes.as_slice(),
-                // &mut lcp_bytes.as_slice(),
-                // concatenation.len(),
+                length,
+                stream_builder,
                 self.k,
                 self.build_lcs,
                 self.add_all_dummy_paths,

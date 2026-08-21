@@ -1,7 +1,7 @@
 use simple_sds_sbwt::serialize::Serialize;
 
-pub trait StreamBuilder<'a, T> {
-    type Stream: Iterator<Item = T> + 'a;
+pub trait StreamBuilder<'a, T: Send + Sync> {
+    type Stream: Iterator<Item = T> + Send + 'a;
     fn build(&'a self, offset: usize) -> Self::Stream;
 }
 
@@ -34,7 +34,7 @@ pub struct MemoryStreamIterator<'a, T> {
     data: &'a MemoryStream<T>,
 }
 
-impl<'a, T: Copy> StreamBuilder<'a, T> for MemoryStream<T>
+impl<'a, T: Send + Sync + Copy> StreamBuilder<'a, T> for MemoryStream<T>
 where T: 'a {
     type Stream = MemoryStreamIterator<'a, T>;
 
@@ -131,6 +131,7 @@ constant_width_serializable!(
 pub mod constant_width_serializable {
     pub trait ConstantWidthSerializable:
         simple_sds_sbwt::serialize::Serializable
+        + Send + Sync
     {
         fn byte_size() -> usize;
     }
