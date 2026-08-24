@@ -1696,10 +1696,10 @@ fn _build_sbwt_region_with_all_dummies<SB>(
 where SB: StreamBuilder<usize> + Send + Sync
 {
     let mut index = start;
-    let mut stream = suffix_array.build(start);
+    let mut stream = suffix_array.build(start).peekable();
 
-    let length_lcp_outedge = |index: usize, stream: &mut <SB as StreamBuilder<usize>>::Stream<'_>| -> (usize, usize, usize) {
-        let current_suffix_index = stream.next().unwrap();
+    let length_lcp_outedge = |index: usize, stream: &mut std::iter::Peekable<<SB as StreamBuilder<usize>>::Stream<'_>>| -> (usize, usize, usize) {
+        let current_suffix_index = stream.peek().unwrap();
         let previous_character_index_in_input = (current_suffix_index + length - 1) % length;
         let previous_character = input[previous_character_index_in_input];
         let outedge = CHAR_TO_INDEX[previous_character as usize];
@@ -1718,6 +1718,7 @@ where SB: StreamBuilder<usize> + Send + Sync
                 break;
             }
             index += 1;
+            stream.next().unwrap();
         }
         if index >= end {
             return SbwtAllDummiesRegionResult {
@@ -1820,6 +1821,7 @@ where SB: StreamBuilder<usize> + Send + Sync
         current_set |= (1 << outedge) as u8;
 
         index += 1;
+        stream.next().unwrap();
     }
 
     if is_last_thread {
