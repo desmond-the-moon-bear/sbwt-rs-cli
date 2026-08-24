@@ -126,7 +126,7 @@ pub mod stream;
 use stream::StreamBuilder;
 use input_structures::{Bwt, Lcp, CHAR_TO_INDEX};
 use crate::atomic_bitmap::AtomicBitmap;
-use crate::build_by_suffix_sorting::stream::MemoryStream;
+use crate::build_by_suffix_sorting::stream::{MemoryStream, DiskStream};
 use crate::vodbg::count::{Counts, Sample};
 use crate::{LcsArray, SbwtIndex, SubsetSeq};
 
@@ -168,21 +168,50 @@ pub fn build<SS, SB>(
     threads: usize,
     input: Vec<u8>,
     length: usize,
-    suffix_array: SB,
+    suffix_array: Vec<usize>,
     k: usize,
     build_lcs: bool,
     add_all_dummies: bool,
-    build_counts: bool
+    build_counts: bool,
+    stream_suffix_array_from_disk: bool,
+    temp_dir: Option<&std::path::Path>,
 ) -> Output<SS>
 where SS: SubsetSeq + Send,
-      SB: StreamBuilder<usize> + Send + Sync
 {
     log::info!("[build] begin");
     let thread_pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
     let mut result = None;
     thread_pool.scope(|scope| {
         scope.spawn(|_| {
-            let output = par_build(threads, input, length, suffix_array, k, build_lcs, add_all_dummies, build_counts, false);
+            let output = if stream_suffix_array_from_disk {
+                par_build::<SS, MemoryStream<usize>>(
+                    threads,
+                    input,
+                    length,
+                    suffix_array.into(),
+                    k,
+                    build_lcs,
+                    add_all_dummies,
+                    build_counts,
+                    false
+                )
+            } else {
+                let suffix_array = match temp_dir {
+                    Some(path) => DiskStream::new_with_temp_dir(suffix_array, path),
+                    None => DiskStream::new(suffix_array),
+                };
+                par_build(
+                    threads,
+                    input,
+                    length,
+                    suffix_array,
+                    k,
+                    build_lcs,
+                    add_all_dummies,
+                    build_counts,
+                    false
+                )
+            };
             result = Some(output);
         });
     });
@@ -211,18 +240,38 @@ pub fn build_with_bounded_suffix_array<SS: SubsetSeq + Send>(
         scope.spawn(|_| {
             let suffix_array = par_bounded_context_suffix_array_bucket_sort(&mut input, k, prefix_length_for_bucket_sort);
             let length = suffix_array.len();
-            let stream_builder = MemoryStream::new(suffix_array);
-            let output = par_build::<SS, MemoryStream<usize>>(
-                threads,
-                input,
-                length,
-                stream_builder,
-                k,
-                build_lcs,
-                add_all_dummies,
-                build_counts,
-                true
-            );
+
+            let output = if !stream_suffix_array_from_disk {
+                let suffix_array = MemoryStream::new(suffix_array);
+                par_build::<SS, _>(
+                    threads,
+                    input,
+                    length,
+                    suffix_array,
+                    k,
+                    build_lcs,
+                    add_all_dummies,
+                    build_counts,
+                    true
+                )
+            } else {
+                let suffix_array = match temp_dir {
+                    Some(path) => DiskStream::new_with_temp_dir(suffix_array, path),
+                    None => DiskStream::new(suffix_array),
+                };
+                par_build::<SS, _>(
+                    threads,
+                    input,
+                    length,
+                    suffix_array,
+                    k,
+                    build_lcs,
+                    add_all_dummies,
+                    build_counts,
+                    true
+                )
+            };
+
             result = Some(output);
         });
     });
@@ -2096,7 +2145,7 @@ mod tests {
         build_lcp_and_lengths(threads, k, seqs, false);
     }
 
-    fn randomised_kmers(bounded: bool) {
+    fn randomised_kmers(bounded: bool, stream_suffix_array_from_disk: bool) {
         use rand_chacha::ChaCha20Rng;
         use rand_chacha::rand_core::SeedableRng;
         use rand_chacha::rand_core::RngCore;
@@ -2141,7 +2190,17 @@ mod tests {
                 sbwt: constructed_sbwt,
                 lcs: constructed_lcs,
                 counts
-            } = build_with_bounded_suffix_array::<SubsetMatrix>(4, concatenation.clone(), k, 4, true, false, false, false, None);
+            } = build_with_bounded_suffix_array::<SubsetMatrix>(
+                4,
+                concatenation.clone(),
+                k,
+                4,
+                true,
+                false,
+                false,
+                stream_suffix_array_from_disk,
+                None
+            );
 
             let correct_lcs = correct_lcs.unwrap();
             let constructed_lcs = constructed_lcs.unwrap();
@@ -2159,11 +2218,13 @@ mod tests {
                 4,
                 concatenation.clone(),
                 concatenation.len(),
-                suffix_array.clone().into(),
+                suffix_array.clone(),
                 k,
                 true,
                 false,
-                false
+                false,
+                stream_suffix_array_from_disk,
+                None,
             );
 
             let constructed_lcs = constructed_lcs.unwrap();
@@ -2184,7 +2245,17 @@ mod tests {
                 sbwt: constructed_sbwt,
                 lcs: constructed_lcs,
                 counts
-            } = build_with_bounded_suffix_array::<SubsetMatrix>(4, concatenation.clone(), k, 4, true, true, true, false, None);
+            } = build_with_bounded_suffix_array::<SubsetMatrix>(
+                4,
+                concatenation.clone(),
+                k,
+                4,
+                true,
+                true,
+                true,
+                stream_suffix_array_from_disk,
+                None
+            );
 
             let correct_lcs = correct_lcs.unwrap();
             let constructed_lcs = constructed_lcs.unwrap();
@@ -2215,11 +2286,13 @@ mod tests {
                 4,
                 concatenation,
                 suffix_array.len(),
-                suffix_array.into(),
+                suffix_array,
                 k,
                 true,
                 true,
-                true
+                true,
+                stream_suffix_array_from_disk,
+                None
             );
 
             constructed_sbwt.build_select();
@@ -2234,11 +2307,13 @@ mod tests {
 
     #[test]
     fn randomised_kmers_bounded_context() {
-        randomised_kmers(true);
+        randomised_kmers(true, true);
+        randomised_kmers(true, false);
     }
 
     #[test]
     fn randomised_kmers_full_context() {
-        randomised_kmers(false);
+        randomised_kmers(false, true);
+        randomised_kmers(false, false);
     }
 }
