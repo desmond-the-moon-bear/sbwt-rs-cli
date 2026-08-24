@@ -183,7 +183,7 @@ where SS: SubsetSeq + Send,
     let mut result = None;
     thread_pool.scope(|scope| {
         scope.spawn(|_| {
-            let output = if stream_suffix_array_from_disk {
+            let output = if !stream_suffix_array_from_disk {
                 par_build::<SS, MemoryStream<usize>>(
                     threads,
                     input,
