@@ -46,14 +46,7 @@ pub struct DiskStream<T: CWS> {
 }
 
 impl<T: CWS> DiskStream<T> {
-    pub fn new(data: Vec<T>) -> Self {
-        Self::new_with_temp_dir(data, std::path::Path::new("/tmp"))
-    }
-
-    pub fn new_with_temp_dir(data: Vec<T>, temp_dir: &std::path::Path) -> Self {
-        use crate::tempfile::TempFileManager;
-        let mut temp_file_manager = TempFileManager::new(temp_dir);
-
+    pub fn new(data: Vec<T>, temp_file_manager: &mut crate::tempfile::TempFileManager) -> Self {
         use simple_sds_sbwt::serialize::Serialize;
         let mut file = temp_file_manager.create_new_file("suffix_array", 16, ".bin");
 
@@ -177,7 +170,8 @@ mod tests {
         let length = 64;
         let invariant = make_number_vector(length);
         let numbers = make_number_vector(length);
-        let in_memory_stream = DiskStream::new(numbers);
+        let mut temp_file_manager = crate::tempfile::TempFileManager::new(std::path::Path::new("."));
+        let in_memory_stream = DiskStream::new(numbers, &mut temp_file_manager);
         for offset in 0..length {
             iterators_return_the_same_values(
                 in_memory_stream.build(offset),

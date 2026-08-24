@@ -164,7 +164,7 @@ pub struct Output<SS: SubsetSeq + Send> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn build<SS, SB>(
+pub fn build<SS>(
     threads: usize,
     input: Vec<u8>,
     length: usize,
@@ -174,7 +174,7 @@ pub fn build<SS, SB>(
     add_all_dummies: bool,
     build_counts: bool,
     stream_suffix_array_from_disk: bool,
-    temp_dir: Option<&std::path::Path>,
+    temp_file_manager: &mut crate::tempfile::TempFileManager,
 ) -> Output<SS>
 where SS: SubsetSeq + Send,
 {
@@ -196,10 +196,7 @@ where SS: SubsetSeq + Send,
                     false
                 )
             } else {
-                let suffix_array = match temp_dir {
-                    Some(path) => DiskStream::new_with_temp_dir(suffix_array, path),
-                    None => DiskStream::new(suffix_array),
-                };
+                let suffix_array = DiskStream::new(suffix_array, temp_file_manager);
                 par_build(
                     threads,
                     input,
@@ -229,13 +226,11 @@ pub fn build_with_bounded_suffix_array<SS: SubsetSeq + Send>(
     add_all_dummies: bool,
     build_counts: bool,
     stream_suffix_array_from_disk: bool,
-    temp_dir: Option<&std::path::Path>,
+    temp_file_manager: &mut crate::tempfile::TempFileManager,
 ) -> Output<SS> {
     log::info!("[build_with_bounded_suffix_array] begin");
     let thread_pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
     let mut result = None;
-    let _ = stream_suffix_array_from_disk;
-    let _ = temp_dir;
     thread_pool.scope(|scope| {
         scope.spawn(|_| {
             let suffix_array = par_bounded_context_suffix_array_bucket_sort(&mut input, k, prefix_length_for_bucket_sort);
@@ -255,10 +250,7 @@ pub fn build_with_bounded_suffix_array<SS: SubsetSeq + Send>(
                     true
                 )
             } else {
-                let suffix_array = match temp_dir {
-                    Some(path) => DiskStream::new_with_temp_dir(suffix_array, path),
-                    None => DiskStream::new(suffix_array),
-                };
+                let suffix_array = DiskStream::new(suffix_array, temp_file_manager);
                 par_build::<SS, _>(
                     threads,
                     input,
@@ -2179,6 +2171,8 @@ mod tests {
            make_suffix_array_full_context(&concatenation)
         };
 
+        let mut temp_file_manager = crate::tempfile::TempFileManager::new(std::path::Path::new("."));
+
         {
             // Without redundant dummies.
             let (correct_sbwt, correct_lcs) = BitPackedKmerSortingMem::new_from_vecs(&seqs, k)
@@ -2199,7 +2193,7 @@ mod tests {
                 false,
                 false,
                 stream_suffix_array_from_disk,
-                None
+                &mut temp_file_manager,
             );
 
             let correct_lcs = correct_lcs.unwrap();
@@ -2214,7 +2208,7 @@ mod tests {
                 sbwt: constructed_sbwt,
                 lcs: constructed_lcs,
                 counts
-            } = build::<SubsetMatrix, MemoryStream<usize>>(
+            } = build::<SubsetMatrix>(
                 4,
                 concatenation.clone(),
                 concatenation.len(),
@@ -2224,7 +2218,7 @@ mod tests {
                 false,
                 false,
                 stream_suffix_array_from_disk,
-                None,
+                &mut temp_file_manager,
             );
 
             let constructed_lcs = constructed_lcs.unwrap();
@@ -2254,7 +2248,7 @@ mod tests {
                 true,
                 true,
                 stream_suffix_array_from_disk,
-                None
+                &mut temp_file_manager,
             );
 
             let correct_lcs = correct_lcs.unwrap();
@@ -2282,7 +2276,7 @@ mod tests {
                 sbwt: mut constructed_sbwt,
                 lcs: constructed_lcs,
                 counts
-            } = build::<SubsetMatrix, MemoryStream<usize>>(
+            } = build::<SubsetMatrix>(
                 4,
                 concatenation,
                 suffix_array.len(),
@@ -2292,7 +2286,7 @@ mod tests {
                 true,
                 true,
                 stream_suffix_array_from_disk,
-                None
+                &mut temp_file_manager,
             );
 
             constructed_sbwt.build_select();
