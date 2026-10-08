@@ -588,7 +588,7 @@ fn _build_sbwt_region_without_redundant_dummies(
             k_range_count += 1;
         }
 
-        if aux.shorter_than_k.bit(index) {
+        if aux.lengths.get(index) < k {
             has_dummy_kmer = true;
             if dummy_marks.keep_dummy.bit(index) {
                 if build_lcs && !include_dummy_kmer {
@@ -600,7 +600,7 @@ fn _build_sbwt_region_without_redundant_dummies(
                 }
                 include_dummy_kmer = true;
             }
-            if dummy_marks.keep_dummy.bit(index) || aux.equal_to_k_minus_one_or_k.bit(index) {
+            if dummy_marks.keep_dummy.bit(index) || aux.lengths.get(index) == k - 1 {
                 current_set = include_letter(&aux.bwt, index, current_set);
             }
         } else {
@@ -840,10 +840,11 @@ pub(crate) struct FullAuxiliaryData {
     pub(crate) kmer_count: usize,
     pub(crate) bwt: Bwt,
     pub(crate) lcp: Lcp,
+    pub(crate) lengths: Lcp,
     /// Used to figure out whether a k-mer at the beginning of a sequence has a true k-mer as a
     /// predecessor in order to figure out whether the dummy k-mer is necessary. In the final pass
     /// it is used to figure out if a given (k-1)-range contains a region of dummy k-mers.
-    pub(crate) shorter_than_k: RawVector,
+    // pub(crate) shorter_than_k: RawVector,
     /// Used in the pass which marks the dummy k-mers that need to be kept in order to identify the
     /// k-mers which are at the beginning of an input sequence.
     ///
@@ -852,7 +853,7 @@ pub(crate) struct FullAuxiliaryData {
     /// sequence has the needed label. This is needed as we don't want to include all letters of
     /// dummy k-mers whose "true" length is less than k-1 and there is no way to figure out which
     /// ones are those from the [FullAuxiliaryBitVectors::shorter_than_k] bitvector alone.
-    pub(crate) equal_to_k_minus_one_or_k: RawVector,
+    // pub(crate) equal_to_k_minus_one_or_k: RawVector,
     /// Used in order to figure out the bounds at which to check the [Self::shorter_than_k]
     /// bitvector whether a non-dummy k-mer at the beginning of an input sequence has a non-dummy
     /// k-mer as a predecessor. In addition, it is used to figure out the bounds at which to
@@ -902,8 +903,8 @@ where SB: StreamBuilder<usize> + Send + Sync
     bwt_vectors[0].set(0, true);
 
     let kmer_count = AtomicUsize::new(0);
-    let shorter_than_k     = AtomicBitmap::new(length);
-    let equal_to_k_minus_one_or_k         = AtomicBitmap::new(length);
+    // let shorter_than_k     = AtomicBitmap::new(length);
+    // let equal_to_k_minus_one_or_k         = AtomicBitmap::new(length);
     let k_minus_one_ranges = AtomicBitmap::new(length);
     let k_ranges           = AtomicBitmap::new(length);
 
@@ -916,8 +917,8 @@ where SB: StreamBuilder<usize> + Send + Sync
         let lengths            = &lengths;
         let bwt_vectors        = &bwt_vectors;
         let kmer_count         = &kmer_count;
-        let shorter_than_k     = &shorter_than_k;
-        let equal_to_k_minus_one_or_k         = &equal_to_k_minus_one_or_k;
+        // let shorter_than_k     = &shorter_than_k;
+        // let equal_to_k_minus_one_or_k         = &equal_to_k_minus_one_or_k;
         let k_minus_one_ranges = &k_minus_one_ranges;
         let k_ranges           = &k_ranges;
 
@@ -943,14 +944,14 @@ where SB: StreamBuilder<usize> + Send + Sync
                     let length = lengths.get(index);
                     let lcp_value = lcp.get(index);
 
-                    if length < k {
-                        shorter_than_k.set(index, true);
-                        if length == k - 1 {
-                            equal_to_k_minus_one_or_k.set(index, true);
-                        }
-                    } else if length == k {
-                        equal_to_k_minus_one_or_k.set(index, true);
-                    }
+                    // if length < k {
+                    //     shorter_than_k.set(index, true);
+                    //     if length == k - 1 {
+                    //         equal_to_k_minus_one_or_k.set(index, true);
+                    //     }
+                    // } else if length == k {
+                    //     equal_to_k_minus_one_or_k.set(index, true);
+                    // }
 
                     if lcp_value < length.min(k) {
                         k_ranges.set(index, true);
@@ -976,8 +977,8 @@ where SB: StreamBuilder<usize> + Send + Sync
     }
 
     let mut bwt_op = None;
-    let mut shorter_than_k_op            = None;
-    let mut equal_to_k_minus_one_or_k_op = None;
+    // let mut shorter_than_k_op            = None;
+    // let mut equal_to_k_minus_one_or_k_op = None;
     let mut k_minus_one_ranges_op        = None;
     let mut k_ranges_op                  = None;
 
@@ -995,15 +996,15 @@ where SB: StreamBuilder<usize> + Send + Sync
             log::info!("[par_build_full_auxiliary_data] bwt done");
         });
 
-        s.spawn(|_| {
-            let shorter_than_k = convert_atomic_bitmap(shorter_than_k);
-            shorter_than_k_op = Some(shorter_than_k);
-        });
+        // s.spawn(|_| {
+        //     let shorter_than_k = convert_atomic_bitmap(shorter_than_k);
+        //     shorter_than_k_op = Some(shorter_than_k);
+        // });
 
-        s.spawn(|_| {
-            let equal_to_k_minus_one_or_k = convert_atomic_bitmap(equal_to_k_minus_one_or_k);
-            equal_to_k_minus_one_or_k_op = Some(equal_to_k_minus_one_or_k);
-        });
+        // s.spawn(|_| {
+        //     let equal_to_k_minus_one_or_k = convert_atomic_bitmap(equal_to_k_minus_one_or_k);
+        //     equal_to_k_minus_one_or_k_op = Some(equal_to_k_minus_one_or_k);
+        // });
 
         s.spawn(|_| {
             let k_ranges = convert_atomic_bitmap(k_ranges);
@@ -1025,8 +1026,9 @@ where SB: StreamBuilder<usize> + Send + Sync
         kmer_count: kmer_count.load(std::sync::atomic::Ordering::Relaxed),
         bwt: bwt_op.unwrap(),
         lcp,
-        shorter_than_k            : shorter_than_k_op.unwrap(),
-        equal_to_k_minus_one_or_k : equal_to_k_minus_one_or_k_op.unwrap(),
+        lengths,
+        // shorter_than_k            : shorter_than_k_op.unwrap(),
+        // equal_to_k_minus_one_or_k : equal_to_k_minus_one_or_k_op.unwrap(),
         k_minus_one_ranges        : k_minus_one_ranges_op.unwrap(),
         k_ranges                  : k_ranges_op.unwrap(),
     }
@@ -1413,13 +1415,17 @@ fn par_build_dummy_marks(threads: usize, k: usize, aux: &FullAuxiliaryData) -> D
                         predecessor_confirmed = false;
                     }
 
-                    if !aux.shorter_than_k.bit(index) {
-                        if aux.equal_to_k_minus_one_or_k.bit(index) {
+                    // if !aux.shorter_than_k.bit(index) {
+                    let true_length = aux.lengths.get(index);
+                    if true_length >= k {
+                        // if aux.equal_to_k_minus_one_or_k.bit(index) {
+                        if true_length == k {
                             // Equal to k.
                             let predecessor = bwt.inverse_lf_step(index);
                             if !predecessor_confirmed {
                                 predecessor_confirmed |= has_full_kmer_predecessor(
-                                    predecessor, bwt, &aux.k_minus_one_ranges, &aux.shorter_than_k
+                                    // predecessor, bwt, &aux.k_minus_one_ranges, &aux.shorter_than_k
+                                    k, predecessor, bwt, &aux.k_minus_one_ranges, &aux.lengths
                                 );
                             }
 
@@ -1456,11 +1462,14 @@ fn par_build_dummy_marks(threads: usize, k: usize, aux: &FullAuxiliaryData) -> D
 /// Finds the end of the (k-1)-range and performs two rank queries on the shorter_than_k bitvector
 /// in order to figure out if there is a non-dummy k-mer in this (k-1) range. If there is then the
 /// dummy k-mer is not needed.
+#[inline]
 pub(crate) fn has_full_kmer_predecessor(
+    k: usize,
     predecessor: usize,
     bwt: &Bwt,
     k_minus_one_ranges: &BitVector, 
-    shorter_than_k: &RawVector
+    // shorter_than_k: &RawVector
+    lengths: &Lcp,
 ) -> bool {
     let range_start = predecessor;
     let one_index = k_minus_one_ranges.rank(range_start + 1);
@@ -1470,7 +1479,8 @@ pub(crate) fn has_full_kmer_predecessor(
         // There is at least one 1 after the current position.
         k_minus_one_ranges.select(one_index).unwrap()
     };
-    !shorter_than_k.bit(range_end - 1)
+    // !shorter_than_k.bit(range_end - 1)
+    lengths.get(range_end - 1) >= k
 }
 
 fn keep_predecessors_atomic(
@@ -2137,7 +2147,7 @@ mod tests {
         build_lcp_and_lengths(threads, k, seqs, false);
     }
 
-    fn randomised_kmers(bounded: bool, stream_suffix_array_from_disk: bool) {
+    fn randomised_kmers_inner(stream_suffix_array_from_disk: bool) {
         use rand_chacha::ChaCha20Rng;
         use rand_chacha::rand_core::SeedableRng;
         use rand_chacha::rand_core::RngCore;
@@ -2164,13 +2174,8 @@ mod tests {
         seqs.sort();
         seqs.dedup();
 
-        let mut concatenation = make_concatenation(&seqs);
-        let suffix_array = if bounded {
-            make_suffix_array(4, &mut concatenation, k)
-        } else {
-           make_suffix_array_full_context(&concatenation)
-        };
-
+        let concatenation = make_concatenation(&seqs);
+        let suffix_array = make_suffix_array_full_context(&concatenation);
         let mut temp_file_manager = crate::tempfile::TempFileManager::new(std::path::Path::new("."));
 
         {
@@ -2301,13 +2306,7 @@ mod tests {
 
     #[test]
     fn randomised_kmers_bounded_context() {
-        randomised_kmers(true, true);
-        randomised_kmers(true, false);
-    }
-
-    #[test]
-    fn randomised_kmers_full_context() {
-        randomised_kmers(false, true);
-        randomised_kmers(false, false);
+        randomised_kmers_inner(true);
+        randomised_kmers_inner(false);
     }
 }
