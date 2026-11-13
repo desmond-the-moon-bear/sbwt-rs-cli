@@ -687,7 +687,7 @@ pub(crate) fn collect_output<SS: SubsetSeq + Send>(
         crate::PrefixLookupTable::new_empty(n_sets)
     );
     // TODO: add a parameter for prefix_length?
-    let prefix_lookup_table = crate::PrefixLookupTable::new(&index, 8);
+    let prefix_lookup_table = crate::PrefixLookupTable::new(&index, 8.min(k));
     index.set_lookup_table(prefix_lookup_table);
     let lcs = lcs.map(LcsArray::new);
 
@@ -1175,7 +1175,6 @@ fn par_build_lengths<SB: StreamBuilder<usize> + Send + Sync>(
         for thread_index in 0..threads {
             let start = thread_index * thread_region_length;
             let end = (start + thread_region_length).min(length);
-
             s.spawn(move |_| {
                 let mut skip_end = end;
                 let mut current_length = 0;
@@ -1188,7 +1187,7 @@ fn par_build_lengths<SB: StreamBuilder<usize> + Send + Sync>(
                         current_length += 1;
                     }
                 }
-                let skipped_entries = end - skip_end - 1;
+                let skipped_entries = end - skip_end;
                 let local_buffer_length = end - start;
                 let data = vec![0_u8; local_buffer_length * lengths_width];
                 let mut local_lengths = Lcp::new_with_width(data, lengths_width);
@@ -2145,6 +2144,48 @@ mod tests {
 
         build_lcp_and_lengths(threads, k, seqs.clone(), true);
         build_lcp_and_lengths(threads, k, seqs, false);
+    }
+
+    #[test]
+    fn specific_kmers_1() {
+        let k = 7;
+        let seqs = seqs![
+            b"AAAAAAC",
+            b"AAAAAAT",
+        ];
+
+        let concatenation = make_concatenation(&seqs);
+        let suffix_array = make_suffix_array_full_context(&concatenation);
+        let mut temp_file_manager = crate::tempfile::TempFileManager::new(std::path::Path::new("."));
+
+        // Without redundant dummies.
+        let (correct_sbwt, correct_lcs) = BitPackedKmerSortingMem::new_from_vecs(&seqs, k)
+            .build_lcs(true)
+            .run();
+
+        let correct_lcs = correct_lcs.unwrap();
+
+        let Output {
+            sbwt: constructed_sbwt,
+            lcs: constructed_lcs,
+            counts
+        } = build::<SubsetMatrix>(
+            4,
+            concatenation.clone(),
+            concatenation.len(),
+            suffix_array.clone(),
+            k,
+            true,
+            false,
+            false,
+            false,
+            &mut temp_file_manager,
+        );
+
+        let constructed_lcs = constructed_lcs.unwrap();
+        assert!(counts.is_none());
+        assert_eq!(correct_sbwt, constructed_sbwt);
+        assert_eq!(correct_lcs, constructed_lcs);
     }
 
     fn randomised_kmers_inner(stream_suffix_array_from_disk: bool) {
